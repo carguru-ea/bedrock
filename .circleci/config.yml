@@ -3,77 +3,122 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-jobs:
-  deploy-to-env:
+commands:
+  install-tooling:
+    steps:
+      - run:
+          name: Install Salesforce CLI and dependencies
+          command: |
+            sudo npm install -g @salesforce/cli
+            sf --version
+            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+            java -version
+
+  jwt-auth:
     parameters:
       target_env:
         type: string
-    docker:
-      - image: cimg/node:18.17
     steps:
-      - checkout
-
-      # Install Salesforce CLI
       - run:
-          name: Install Salesforce CLI
+          name: Decode JWT key for << parameters.target_env >>
           command: |
-            sudo npm install -g @salesforce/cli
-            echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
-            source "$BASH_ENV"
-            sf --version
-            sf plugins --core
-
-
-      - run:
-          name: Install Java (required for PMD)
-          command: |
-            sudo apt-get update
-            sudo apt-get install -y openjdk-17-jdk
-            java -version
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            echo "export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $BASH_ENV
-
-        
-      # Prepare JWT key (supports either raw or base64 env var)
-      - run:
-          name: Prepare JWT key
-          command: |
-            echo "$JWT_KEY_B64" | base64 -d > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
-            openssl rsa -in server.key -check -noout
-
       - run:
-          name: JWT Auth
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
-            source "$BASH_ENV"
             sf org login jwt \
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
               --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}"
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
 
+  deploy:
+    parameters:
+      test_level:
+        type: string
+        default: RunLocalTests
+    steps:
       - run:
-          name: Deploy to Salesforce
+          name: Deploy to Salesforce (<< parameters.test_level >>)
           command: |
-            source "$BASH_ENV"
-            sf project deploy start --target-org "${SF_USERNAME_<< parameters.target_env >>}"
+            sf project deploy start \
+              --target-org target \
+              --ignore-conflicts \
+              --test-level "<< parameters.test_level >>" \
+              --wait 90
+      - run:
+          name: Run Apex Tests
+          command: |
+            sf apex run test \
+              --target-org target \
+              --test-level "<< parameters.test_level >>" \
+              --code-coverage \
+              --result-format junit \
+              --wait 60 \
+              --output-dir test-results
+      - store_artifacts:
+          path: test-results
+      - store_test_results:
+          path: test-results
 
+jobs:
+  deploy-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy:
+          test_level: RunLocalTests
+
+  deploy-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGING
+      - deploy:
+          test_level: RunLocalTests
+
+  deploy-prod:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy:
+          test_level: RunLocalTests
 
 workflows:
-  deploy-qa:
+  version: 2
+  build-test-deploy:
     jobs:
-      - deploy-to-env:
-          name: Deploy to QA
-          target_env: "Intqa"
+      # Integration QA branch → IntQA org
+      - deploy-intqa:
+          context: sf-intqa
           filters:
             branches:
               only: BRInt
 
-  deploy-uat:
-    jobs:
-      - deploy-to-env:
-          name: Deploy to UAT
-          target_env: "StagingUAT"
+      # Staging branch → Staging/UAT org
+      - deploy-staging:
+          context: sf-staging
           filters:
             branches:
               only: BRStaging
+
+      # Main branch → Production org
+      - deploy-prod:
+          context: sf-prod
+          filters:
+            branches:
+              only: main
