@@ -35,36 +35,35 @@ commands:
               --alias target \
               --set-default
 
-deploy:
-  parameters:
-    test_level:
-      type: string
-      default: RunLocalTests
-  steps:
-    - run:
-        name: Deploy to Salesforce (<< parameters.test_level >>)
-        command: |
-          cd bedrock-main
-          sf project deploy start \
-            --target-org target \
-            --test-level "<< parameters.test_level >>" \
-            --wait 90
-    - run:
-        name: Run Apex Tests
-        command: |
-          cd bedrock-main
-          sf apex run test \
-            --target-org target \
-            --test-level "<< parameters.test_level >>" \
-            --code-coverage \
-            --result-format junit \
-            --wait 60 \
-            --output-dir test-results
-    - store_artifacts:
-        path: bedrock-main/test-results
-    - store_test_results:
-        path: bedrock-main/test-results
-
+  deploy:
+    parameters:
+      test_level:
+        type: string
+        default: RunLocalTests
+    steps:
+      - run:
+          name: Deploy to Salesforce (<< parameters.test_level >>)
+          command: |
+            cd bedrock-main
+            sf project deploy start \
+              --target-org target \
+              --test-level "<< parameters.test_level >>" \
+              --wait 90
+      - run:
+          name: Run Apex Tests
+          command: |
+            cd bedrock-main
+            sf apex run test \
+              --target-org target \
+              --test-level "<< parameters.test_level >>" \
+              --code-coverage \
+              --result-format junit \
+              --wait 60 \
+              --output-dir test-results
+      - store_artifacts:
+          path: bedrock-main/test-results
+      - store_test_results:
+          path: bedrock-main/test-results
 
 jobs:
   deploy-intqa:
