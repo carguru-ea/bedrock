@@ -63,11 +63,11 @@ commands:
   # ----------------------------------------------------------
   # Deploy and run tests (delta enabled)
   # ----------------------------------------------------------
-    deploy:
-      parameters:
-        test_level:
-          type: string
-          default: RunLocalTests
+  deploy:
+    parameters:
+      test_level:
+        type: string
+        default: RunLocalTests
     steps:
       - run:
           name: Generate delta package (changed metadata only)
@@ -104,6 +104,7 @@ commands:
                 --test-level "<< parameters.test_level >>" \
                 --wait 90
             fi
+
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
