@@ -109,7 +109,7 @@ workflows:
             branches:
               only: BRInt
 
-      # Staging branch → Staging/UAT org
+      # Staging branch → Stagindg/UAT org
       - deploy-staging:
           context: sf-staging
           filters:
