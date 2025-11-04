@@ -28,7 +28,7 @@ commands:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
             sf org login jwt \
-              --username varadaravitej379@agentforce.com \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
               --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
               --instance-url https://login.salesforce.com \
