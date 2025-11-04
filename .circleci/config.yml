@@ -20,10 +20,10 @@ commands:
         type: string
     steps:
       - run:
-          name: Decode JWT key for << parameters.target_env >>
+          name: Write JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
-            chmod 600 server.key
+              echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+              chmod 600 server.key
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
