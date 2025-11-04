@@ -31,7 +31,7 @@ commands:
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
               --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --instance-url https://login.salesforce.com \
               --alias target \
               --set-default
 
