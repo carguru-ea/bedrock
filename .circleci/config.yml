@@ -25,17 +25,17 @@ commands:
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
             java -version
             # install sfdx-git-delta for delta deployments
-            if ! sgd --version > /dev/null 2>&1; then
+            if ! command -v sgd >/dev/null 2>&1; then
               echo "Installing sfdx-git-delta..."
-              npm install -g sfdx-git-delta
+              sudo npm install -g sfdx-git-delta
               echo 'export PATH=$(npm bin -g):$PATH' >> $BASH_ENV
               source $BASH_ENV
             fi
       - save_cache:
           key: sf-cli-cache-v1
           paths:
-            - /usr/local/lib/node_modules/@salesforce
-            - /usr/local/bin/sf
+            - /usr/local/lib/node_modules
+            - /usr/local/bin
             - ~/.npm
 
   # ----------------------------------------------------------
@@ -63,7 +63,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # Deploy, run Apex tests, and store results (delta enabled)
+  # Deploy code and run Apex tests
   # ----------------------------------------------------------
   deploy:
     parameters:
@@ -107,9 +107,6 @@ commands:
                 --wait 90
             fi
 
-      # ----------------------------------------------------------
-      # Run Apex tests and export results in JUnit format for CircleCI UI
-      # ----------------------------------------------------------
       - run:
           name: Run Apex Tests and Export Results
           command: |
@@ -125,18 +122,6 @@ commands:
               --wait 60 \
               --output-dir test-results \
               || echo "⚠️ Apex test failures detected but results will still be stored."
-          when: always
-
-      # ✅ Store XML results for CircleCI "Tests" summary tab
-      - store_test_results:
-          path: bedrock-main/Bedrock/test-results
-        when: always
-
-      # ✅ Store artifacts for manual download/debug
-      - store_artifacts:
-          path: bedrock-main/Bedrock/test-results
-          destination: apex-test-results
-        when: always
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
@@ -152,6 +137,11 @@ jobs:
           target_env: INTQA
       - deploy:
           test_level: RunLocalTests
+      - store_test_results:
+          path: bedrock-main/Bedrock/test-results
+      - store_artifacts:
+          path: bedrock-main/Bedrock/test-results
+          destination: apex-test-results
 
   deploy-staging:
     docker:
@@ -163,6 +153,11 @@ jobs:
           target_env: STAGING
       - deploy:
           test_level: RunLocalTests
+      - store_test_results:
+          path: bedrock-main/Bedrock/test-results
+      - store_artifacts:
+          path: bedrock-main/Bedrock/test-results
+          destination: apex-test-results
 
 # -----------------------------------------------------------------
 # WORKFLOWS – map branches to orgs
