@@ -56,13 +56,9 @@ commands:
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
               --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url https://login.salesforce.com \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
               --alias target \
               --set-default
-      - run:
-          name: Verify org connection
-          command: |
-            sf org display --target-org target
 
   # ----------------------------------------------------------
   # Deploy and run tests (delta enabled)
@@ -117,11 +113,6 @@ commands:
               --wait 60 \
               --output-dir test-results
 
-      - store_artifacts:
-          path: bedrock-main/test-results
-      - store_test_results:
-          path: bedrock-main/test-results
-
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
 # -----------------------------------------------------------------
@@ -148,17 +139,6 @@ jobs:
       - deploy:
           test_level: RunLocalTests
 
-  deploy-prod:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy:
-          test_level: RunLocalTests
-
 # -----------------------------------------------------------------
 # WORKFLOWS – map branches to orgs
 # -----------------------------------------------------------------
@@ -179,10 +159,3 @@ workflows:
           filters:
             branches:
               only: BRStaging
-
-      # Main branch → Production org
-      - deploy-prod:
-          context: sf-prod
-          filters:
-            branches:
-              only: main
