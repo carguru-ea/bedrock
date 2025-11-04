@@ -116,7 +116,7 @@ workflows:
             branches:
               only: BRStaging
 
-      # Main branch → Pr oduction org
+      # Main branch → Pr oduction orgd
       - deploy-prod:
           context: sf-prod
           filters:
