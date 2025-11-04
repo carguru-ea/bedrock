@@ -4,16 +4,41 @@ orbs:
   node: circleci/node@5.0.2
 
 commands:
+  # ----------------------------------------------------------
+  # Install Salesforce CLI, Java, and cache them for speed
+  # ----------------------------------------------------------
   install-tooling:
     steps:
+      - restore_cache:
+          keys:
+            - sf-cli-cache-v1
       - run:
-          name: Install Salesforce CLI and dependencies
+          name: Install Salesforce CLI and dependencies (cached)
           command: |
-            sudo npm install -g @salesforce/cli
+            if ! sf --version > /dev/null 2>&1; then
+              echo "Installing Salesforce CLI..."
+              sudo npm install -g @salesforce/cli
+            else
+              echo "Salesforce CLI already cached."
+            fi
             sf --version
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
             java -version
+            # install sfdx-git-delta for delta deployments
+            if ! sgd --version > /dev/null 2>&1; then
+              echo "Installing sfdx-git-delta..."
+              npm install -g sfdx-git-delta
+            fi
+      - save_cache:
+          key: sf-cli-cache-v1
+          paths:
+            - /usr/local/lib/node_modules/@salesforce
+            - /usr/local/bin/sf
+            - ~/.npm
 
+  # ----------------------------------------------------------
+  # JWT Authentication
+  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -22,7 +47,7 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
@@ -34,7 +59,14 @@ commands:
               --instance-url https://login.salesforce.com \
               --alias target \
               --set-default
+      - run:
+          name: Verify org connection
+          command: |
+            sf org display --target-org target
 
+  # ----------------------------------------------------------
+  # Deploy and run tests (delta enabled)
+  # ----------------------------------------------------------
   deploy:
     parameters:
       test_level:
@@ -42,13 +74,37 @@ commands:
         default: RunLocalTests
     steps:
       - run:
-          name: Deploy to Salesforce (<< parameters.test_level >>)
+          name: Generate delta package (changed metadata only)
           command: |
             cd bedrock-main
-            sf project deploy start \
-              --target-org target \
-              --test-level "<< parameters.test_level >>" \
-              --wait 90
+            echo "Detecting metadata changes since last main commit..."
+            export BASE_REF=$(git merge-base origin/main HEAD)
+            mkdir -p .delta
+            sgd --to HEAD --from $BASE_REF --output .delta || echo "Delta generation skipped."
+            echo "Delta contents:"
+            ls -R .delta || echo "No delta changes found."
+
+      - run:
+          name: Deploy changed metadata (or full project if none)
+          command: |
+            cd bedrock-main
+            if [ -d ".delta" ] && [ -n "$(ls -A .delta/force-app 2>/dev/null)" ]; then
+              echo "Deploying delta metadata..."
+              sf project deploy start \
+                --target-org target \
+                --metadata-dir .delta/force-app \
+                --ignore-conflicts \
+                --test-level "<< parameters.test_level >>" \
+                --wait 90
+            else
+              echo "No delta detected; deploying full source..."
+              sf project deploy start \
+                --target-org target \
+                --ignore-conflicts \
+                --test-level "<< parameters.test_level >>" \
+                --wait 90
+            fi
+
       - run:
           name: Run Apex Tests
           command: |
@@ -60,11 +116,15 @@ commands:
               --result-format junit \
               --wait 60 \
               --output-dir test-results
+
       - store_artifacts:
           path: bedrock-main/test-results
       - store_test_results:
           path: bedrock-main/test-results
 
+# -----------------------------------------------------------------
+# JOBS PER ENVIRONMENT
+# -----------------------------------------------------------------
 jobs:
   deploy-intqa:
     docker:
@@ -99,6 +159,9 @@ jobs:
       - deploy:
           test_level: RunLocalTests
 
+# -----------------------------------------------------------------
+# WORKFLOWS – map branches to orgs
+# -----------------------------------------------------------------
 workflows:
   version: 2
   build-test-deploy:
@@ -110,14 +173,14 @@ workflows:
             branches:
               only: BRInt
 
-      # Staging branch → Stagindg/UAT org
+      # Staging branch → Staging/UAT org
       - deploy-staging:
           context: sf-staging
           filters:
             branches:
               only: BRStaging
 
-      # Main branch → Pr oduction orgd
+      # Main branch → Production org
       - deploy-prod:
           context: sf-prod
           filters:
