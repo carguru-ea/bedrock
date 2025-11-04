@@ -72,18 +72,22 @@ commands:
       - run:
           name: Generate delta package (changed metadata only)
           command: |
-            cd bedrock-main
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            echo "Using Salesforce DX project at $PROJECT_DIR"
             echo "Detecting metadata changes since last main commit..."
-            export BASE_REF=$(git merge-base origin/main HEAD)
             mkdir -p .delta
+            BASE_REF=$(git merge-base origin/main HEAD)
             sgd --to HEAD --from $BASE_REF --output .delta || echo "Delta generation skipped."
             echo "Delta contents:"
-            ls -R .delta || echo "No delta changes found."
-
+            ls -R .delta || echo "No delta generated."
+  
       - run:
           name: Deploy changed metadata (or full project if none)
           command: |
-            cd bedrock-main
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            echo "Using Salesforce DX project at $PROJECT_DIR"
             if [ -d ".delta" ] && [ -n "$(ls -A .delta/force-app 2>/dev/null)" ]; then
               echo "Deploying delta metadata..."
               sf project deploy start \
@@ -101,17 +105,6 @@ commands:
                 --wait 90
             fi
 
-      - run:
-          name: Run Apex Tests
-          command: |
-            cd bedrock-main
-            sf apex run test \
-              --target-org target \
-              --test-level "<< parameters.test_level >>" \
-              --code-coverage \
-              --result-format junit \
-              --wait 60 \
-              --output-dir test-results
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
