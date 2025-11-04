@@ -63,7 +63,7 @@ workflows:
   deploy-qa:
     jobs:
       - deploy-to-env:
-          name: Deploy to Intqa
+          name: Deploy to QA
           target_env: "Intqa"
           filters:
             branches:
