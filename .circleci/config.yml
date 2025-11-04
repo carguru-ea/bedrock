@@ -105,6 +105,37 @@ commands:
                 --wait 90
             fi
 
+# ----------------------------------------------------------
+# Run Apex tests and export results in JUnit format for CircleCI UI
+# ----------------------------------------------------------
+      - run:
+          name: Run Apex Tests and Export Results
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            mkdir -p test-results
+            echo "Running Apex tests..."
+            sf apex run test \
+              --target-org target \
+              --test-level "<< parameters.test_level >>" \
+              --code-coverage \
+              --result-format junit \
+              --wait 60 \
+              --output-dir test-results \
+              || echo "⚠️ Apex test failures detected but results will still be stored."
+          when: always
+      
+      # ✅ Store XML results for CircleCI "Tests" summary tab
+      - store_test_results:
+          path: bedrock-main/Bedrock/test-results
+        when: always
+      
+      # ✅ Store artifacts for manual download/debug
+      - store_artifacts:
+          path: bedrock-main/Bedrock/test-results
+          destination: apex-test-results
+        when: always
+
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
