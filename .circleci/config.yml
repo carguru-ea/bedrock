@@ -28,6 +28,8 @@ commands:
             if ! sgd --version > /dev/null 2>&1; then
               echo "Installing sfdx-git-delta..."
               npm install -g sfdx-git-delta
+              echo 'export PATH=$(npm bin -g):$PATH' >> $BASH_ENV
+              source $BASH_ENV
             fi
       - save_cache:
           key: sf-cli-cache-v1
@@ -61,7 +63,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # Deploy and run tests (delta enabled)
+  # Deploy, run Apex tests, and store results (delta enabled)
   # ----------------------------------------------------------
   deploy:
     parameters:
@@ -105,9 +107,9 @@ commands:
                 --wait 90
             fi
 
-# ----------------------------------------------------------
-# Run Apex tests and export results in JUnit format for CircleCI UI
-# ----------------------------------------------------------
+      # ----------------------------------------------------------
+      # Run Apex tests and export results in JUnit format for CircleCI UI
+      # ----------------------------------------------------------
       - run:
           name: Run Apex Tests and Export Results
           command: |
@@ -124,18 +126,17 @@ commands:
               --output-dir test-results \
               || echo "⚠️ Apex test failures detected but results will still be stored."
           when: always
-      
+
       # ✅ Store XML results for CircleCI "Tests" summary tab
       - store_test_results:
           path: bedrock-main/Bedrock/test-results
         when: always
-      
+
       # ✅ Store artifacts for manual download/debug
       - store_artifacts:
           path: bedrock-main/Bedrock/test-results
           destination: apex-test-results
         when: always
-
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
