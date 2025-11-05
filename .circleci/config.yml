@@ -1,0 +1,181 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.0.2
+
+commands:
+  # ----------------------------------------------------------
+  # Install Salesforce CLI, Java, and cache them for speeds
+  # ----------------------------------------------------------
+  install-tooling:
+    steps:
+      - restore_cache:
+          keys:
+            - sf-cli-cache-v1
+      - run:
+          name: Install Salesforce CLI and dependencies (cached)
+          command: |
+            if ! sf --version > /dev/null 2>&1; then
+              echo "Installing Salesforce CLI..."
+              sudo npm install -g @salesforce/cli
+            else
+              echo "Salesforce CLI already cached."
+            fi
+            sf --version
+            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+            java -version
+            # install sfdx-git-delta for delta deployments
+            if ! command -v sgd >/dev/null 2>&1; then
+              echo "Installing sfdx-git-delta..."
+              sudo npm install -g sfdx-git-delta
+              echo 'export PATH=$(npm bin -g):$PATH' >> $BASH_ENV
+              source $BASH_ENV
+            fi
+      - save_cache:
+          key: sf-cli-cache-v1
+          paths:
+            - /usr/local/lib/node_modules
+            - /usr/local/bin
+            - ~/.npm
+
+  # ----------------------------------------------------------
+  # JWT Authentication
+  # ----------------------------------------------------------
+  jwt-auth:
+    parameters:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Decode JWT key for << parameters.target_env >>
+          command: |
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            chmod 600 server.key
+      - run:
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
+
+  # ----------------------------------------------------------
+  # Deploy code and run Apex tests
+  # ----------------------------------------------------------
+  deploy:
+    parameters:
+      test_level:
+        type: string
+        default: RunLocalTests
+    steps:
+      - run:
+          name: Generate delta package (changed metadata only)
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            echo "Using Salesforce DX project at $PROJECT_DIR"
+            echo "Detecting metadata changes since last main commit..."
+            mkdir -p .delta
+            BASE_REF=$(git merge-base origin/main HEAD)
+            sgd --to HEAD --from $BASE_REF --output .delta || echo "Delta generation skipped."
+            echo "Delta contents:"
+            ls -R .delta || echo "No delta generated."
+  
+      - run:
+          name: Deploy changed metadata (or full project if none)
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            echo "Using Salesforce DX project at $PROJECT_DIR"
+            if [ -d ".delta" ] && [ -n "$(ls -A .delta/force-app 2>/dev/null)" ]; then
+              echo "Deploying delta metadata..."
+              sf project deploy start \
+                --target-org target \
+                --metadata-dir .delta/force-app \
+                --ignore-conflicts \
+                --test-level "<< parameters.test_level >>" \
+                --wait 90
+            else
+              echo "No delta detected; deploying full source..."
+              sf project deploy start \
+                --target-org target \
+                --ignore-conflicts \
+                --test-level "<< parameters.test_level >>" \
+                --wait 90
+            fi
+
+      - run:
+          name: Run Apex Tests and Export Results
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            mkdir -p test-results
+            echo "Running Apex tests..."
+            sf apex run test \
+              --target-org target \
+              --test-level "<< parameters.test_level >>" \
+              --code-coverage \
+              --result-format junit \
+              --wait 60 \
+              --output-dir test-results \
+              || echo "⚠️ Apex test failures detected but results will still be stored."
+
+# -----------------------------------------------------------------
+# JOBS PER ENVIRONMENT
+# -----------------------------------------------------------------
+jobs:
+  deploy-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy:
+          test_level: RunLocalTests
+      - store_test_results:
+          path: bedrock-main/Bedrock/test-results
+      - store_artifacts:
+          path: bedrock-main/Bedrock/test-results
+          destination: apex-test-results
+
+  deploy-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy:
+          test_level: RunLocalTests
+      - store_test_results:
+          path: bedrock-main/Bedrock/test-results
+      - store_artifacts:
+          path: bedrock-main/Bedrock/test-results
+          destination: apex-test-results
+
+# -----------------------------------------------------------------
+# WORKFLOWS – map branches to orgs
+# -----------------------------------------------------------------
+workflows:
+  version: 2
+  build-test-deploy:
+    jobs:
+      # Integration QA branch → IntQA org
+      - deploy-intqa:
+          context: sf-intqa
+          filters:
+            branches:
+              only: BRInt
+
+      # Staging branch → Staging/UAT org
+      - deploy-staging:
+          context: sf-staging
+          filters:
+            branches:
+              only: BRStaging
