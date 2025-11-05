@@ -12,33 +12,37 @@ commands:
       - restore_cache:
           keys:
             - sf-cli-cache-v1
-  
+
       - run:
           name: Install Salesforce CLI, Java, and sfdx-git-delta
           command: |
+            set -e
             echo "Installing Salesforce CLI..."
             if ! sf --version > /dev/null 2>&1; then
               sudo npm install -g @salesforce/cli
             fi
-  
+
             echo "Installing Java..."
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-  
+
             echo "Installing sfdx-git-delta..."
-            # Clean any broken global installs
-            sudo npm uninstall -g sfdx-git-delta || true
             sudo npm install -g sfdx-git-delta
-  
-            # Forcefully add npm global binary paths to PATH
-            echo 'export PATH=$PATH:/usr/local/bin:/usr/local/lib/node_modules/sfdx-git-delta/bin' >> "$BASH_ENV"
+
+            # 🔧 Ensure binary symlink is created manually (handles npm path issue)
+            if [ -f "/usr/local/lib/node_modules/sfdx-git-delta/bin/sgd.js" ]; then
+              sudo ln -sf /usr/local/lib/node_modules/sfdx-git-delta/bin/sgd.js /usr/local/bin/sgd
+              sudo chmod +x /usr/local/bin/sgd
+            fi
+
+            echo 'export PATH=$PATH:/usr/local/bin' >> "$BASH_ENV"
             source "$BASH_ENV"
-  
+
             echo "Verifying installs..."
-            which sf || echo "⚠️ sf not found in PATH"
-            which sgd || echo "⚠️ sgd not found in PATH"
+            which sf || echo "⚠️ sf not found"
+            which sgd || echo "⚠️ sgd not found"
             sf --version
-            sgd --version || (echo "❌ sfdx-git-delta not found after path fix" && exit 1)
-  
+            sgd --version || (echo "❌ sfdx-git-delta still not detected" && exit 1)
+
       - save_cache:
           key: sf-cli-cache-v1
           paths:
