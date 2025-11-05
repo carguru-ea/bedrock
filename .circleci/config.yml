@@ -98,14 +98,14 @@ commands:
                 --ignore-conflicts \
                 --test-level "<< parameters.test_level >>" \
                 --wait 90
-            else
-              echo "No delta detected; deploying full source..."
-              sf project deploy start \
-                --target-org target \
-                --ignore-conflicts \
-                --test-level "<< parameters.test_level >>" \
-                --wait 90
-            fi
+            # else
+            #   echo "No delta detected; deploying full source..."
+            #   sf project deploy start \
+            #     --target-org target \
+            #     --ignore-conflicts \
+            #     --test-level "<< parameters.test_level >>" \
+            #     --wait 90
+            # fi
 
       - run:
           name: Run Apex Tests and Export Results
