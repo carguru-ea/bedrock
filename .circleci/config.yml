@@ -8,52 +8,52 @@ commands:
   # Install Salesforce CLI, Java, and cache them for speed
   # ----------------------------------------------------------
   install-tooling:
-  steps:
-    - restore_cache:
-        keys:
-          - sf-cli-cache-v1
-
-    - run:
-        name: Install Salesforce CLI and dependencies (cached)
-        command: |
-          echo "Installing Salesforce CLI..."
-          if ! sf --version > /dev/null 2>&1; then
-            sudo npm install -g @salesforce/cli
-          fi
-
-          echo "Installing Java..."
-          sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-
-          echo "Installing sfdx-git-delta..."
-          # Remove any previous broken installations
-          sudo npm uninstall -g sfdx-git-delta || true
-          # Install fresh copy without sudo so it lands in user’s npm-global bin
-          npm install -g sfdx-git-delta
-
-          # Detect the actual global npm binary path dynamically
-          NPM_GLOBAL_PATH=$(npm root -g)
-          echo "✅ npm global modules at: $NPM_GLOBAL_PATH"
-
-          BIN_PATH=$(dirname "$(npm bin -g 2>/dev/null || echo "$NPM_GLOBAL_PATH/.bin")")
-          echo "✅ Binary path detected: $BIN_PATH"
-
-          # Add both potential paths for safety
-          echo "export PATH=$PATH:$BIN_PATH:/home/circleci/.npm-global/bin" >> "$BASH_ENV"
-          source "$BASH_ENV"
-
-          echo "Verifying tools..."
-          sf --version
-          which sgd || echo "⚠️ sgd binary not found, showing PATH:"
-          echo "$PATH"
-          sgd --version || (echo "❌ sfdx-git-delta still not found even after path injection" && exit 1)
-
-    - save_cache:
-        key: sf-cli-cache-v1
-        paths:
-          - ~/.npm
-          - /usr/local/lib/node_modules
-          - /home/circleci/.npm-global
-          - /usr/local/bin
+    steps:
+      - restore_cache:
+          keys:
+            - sf-cli-cache-v1
+  
+      - run:
+          name: Install Salesforce CLI and dependencies (cached)
+          command: |
+            echo "Installing Salesforce CLI..."
+            if ! sf --version > /dev/null 2>&1; then
+              sudo npm install -g @salesforce/cli
+            fi
+  
+            echo "Installing Java..."
+            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+  
+            echo "Installing sfdx-git-delta..."
+            # Remove any previous broken installations
+            sudo npm uninstall -g sfdx-git-delta || true
+            # Install fresh copy without sudo so it lands in user’s npm-global bin
+            npm install -g sfdx-git-delta
+  
+            # Detect the actual global npm binary path dynamically
+            NPM_GLOBAL_PATH=$(npm root -g)
+            echo "✅ npm global modules at: $NPM_GLOBAL_PATH"
+  
+            BIN_PATH=$(dirname "$(npm bin -g 2>/dev/null || echo "$NPM_GLOBAL_PATH/.bin")")
+            echo "✅ Binary path detected: $BIN_PATH"
+  
+            # Add both potential paths for safety
+            echo "export PATH=$PATH:$BIN_PATH:/home/circleci/.npm-global/bin" >> "$BASH_ENV"
+            source "$BASH_ENV"
+  
+            echo "Verifying tools..."
+            sf --version
+            which sgd || echo "⚠️ sgd binary not found, showing PATH:"
+            echo "$PATH"
+            sgd --version || (echo "❌ sfdx-git-delta still not found even after path injection" && exit 1)
+  
+      - save_cache:
+          key: sf-cli-cache-v1
+          paths:
+            - ~/.npm
+            - /usr/local/lib/node_modules
+            - /home/circleci/.npm-global
+            - /usr/local/bin
 
 
   # ----------------------------------------------------------
