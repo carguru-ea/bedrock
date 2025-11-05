@@ -7,38 +7,38 @@ commands:
   # ----------------------------------------------------------
   # Install Salesforce CLI, Java, and cache them for speeds
   # ----------------------------------------------------------
-install-tooling:
-  steps:
-    - restore_cache:
-        keys:
-          - sf-cli-cache-v1
-    - run:
-        name: Install Salesforce CLI and dependencies (cached)
-        command: |
-          if ! sf --version > /dev/null 2>&1; then
-            echo "Installing Salesforce CLI..."
-            sudo npm install -g @salesforce/cli
-          fi
-
-          # Install Java
-          sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-
-          # Install sfdx-git-delta (delta deploys)
-          if ! command -v sgd >/dev/null 2>&1; then
-            echo "Installing sfdx-git-delta..."
-            sudo npm install -g sfdx-git-delta
-          fi
-
-          # 👇 This is crucial
-          echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
-          source "$BASH_ENV"
-          sgd --version
-    - save_cache:
-        key: sf-cli-cache-v1
-        paths:
-          - /usr/local/lib/node_modules
-          - /usr/local/bin
-          - ~/.npm
+  install-tooling:
+    steps:
+      - restore_cache:
+          keys:
+            - sf-cli-cache-v1
+      - run:
+          name: Install Salesforce CLI and dependencies (cached)
+          command: |
+            if ! sf --version > /dev/null 2>&1; then
+              echo "Installing Salesforce CLI..."
+              sudo npm install -g @salesforce/cli
+            fi
+  
+            # Install Java
+            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+  
+            # Install sfdx-git-delta (delta deploys)
+            if ! command -v sgd >/dev/null 2>&1; then
+              echo "Installing sfdx-git-delta..."
+              sudo npm install -g sfdx-git-delta
+            fi
+  
+            # 👇 This is crucial
+            echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            sgd --version
+      - save_cache:
+          key: sf-cli-cache-v1
+          paths:
+            - /usr/local/lib/node_modules
+            - /usr/local/bin
+            - ~/.npm
 
   # ----------------------------------------------------------
   # JWT Authentication
