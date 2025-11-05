@@ -14,7 +14,7 @@ commands:
             - sf-cli-cache-v1
   
       - run:
-          name: Install Salesforce CLI and dependencies (cached)
+          name: Install Salesforce CLI, Java, and sfdx-git-delta
           command: |
             echo "Installing Salesforce CLI..."
             if ! sf --version > /dev/null 2>&1; then
@@ -25,34 +25,25 @@ commands:
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
   
             echo "Installing sfdx-git-delta..."
-            # Remove any previous broken installations
+            # Clean any broken global installs
             sudo npm uninstall -g sfdx-git-delta || true
-            # Install fresh copy without sudo so it lands in user’s npm-global bin
-            npm install -g sfdx-git-delta
+            sudo npm install -g sfdx-git-delta
   
-            # Detect the actual global npm binary path dynamically
-            NPM_GLOBAL_PATH=$(npm root -g)
-            echo "✅ npm global modules at: $NPM_GLOBAL_PATH"
-  
-            BIN_PATH=$(dirname "$(npm bin -g 2>/dev/null || echo "$NPM_GLOBAL_PATH/.bin")")
-            echo "✅ Binary path detected: $BIN_PATH"
-  
-            # Add both potential paths for safety
-            echo "export PATH=$PATH:$BIN_PATH:/home/circleci/.npm-global/bin" >> "$BASH_ENV"
+            # Forcefully add npm global binary paths to PATH
+            echo 'export PATH=$PATH:/usr/local/bin:/usr/local/lib/node_modules/sfdx-git-delta/bin' >> "$BASH_ENV"
             source "$BASH_ENV"
   
-            echo "Verifying tools..."
+            echo "Verifying installs..."
+            which sf || echo "⚠️ sf not found in PATH"
+            which sgd || echo "⚠️ sgd not found in PATH"
             sf --version
-            which sgd || echo "⚠️ sgd binary not found, showing PATH:"
-            echo "$PATH"
-            sgd --version || (echo "❌ sfdx-git-delta still not found even after path injection" && exit 1)
+            sgd --version || (echo "❌ sfdx-git-delta not found after path fix" && exit 1)
   
       - save_cache:
           key: sf-cli-cache-v1
           paths:
             - ~/.npm
             - /usr/local/lib/node_modules
-            - /home/circleci/.npm-global
             - /usr/local/bin
 
 
