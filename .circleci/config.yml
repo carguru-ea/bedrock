@@ -5,34 +5,38 @@ orbs:
 
 commands:
   # ----------------------------------------------------------
-  # Install Salesforce CLI, Java, and cache them for speeds
+  # Install Salesforce CLI, Java, and cache them for speed
   # ----------------------------------------------------------
   install-tooling:
     steps:
       - restore_cache:
           keys:
             - sf-cli-cache-v1
+
       - run:
           name: Install Salesforce CLI and dependencies (cached)
           command: |
+            echo "Installing Salesforce CLI..."
             if ! sf --version > /dev/null 2>&1; then
-              echo "Installing Salesforce CLI..."
               sudo npm install -g @salesforce/cli
             fi
-  
-            # Install Java
+
+            echo "Installing Java..."
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-  
-            # Install sfdx-git-delta (delta deploys)
+
+            echo "Installing sfdx-git-delta..."
             if ! command -v sgd >/dev/null 2>&1; then
-              echo "Installing sfdx-git-delta..."
               sudo npm install -g sfdx-git-delta
             fi
-  
-            # 👇 This is crucial
+
+            # 👇 Persist global npm bin path across steps
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
-            sgd --version
+
+            echo "Verifying tools..."
+            sf --version
+            sgd --version || (echo "❌ sfdx-git-delta not found in PATH" && exit 1)
+
       - save_cache:
           key: sf-cli-cache-v1
           paths:
@@ -82,10 +86,10 @@ commands:
             echo "Detecting metadata changes since last main commit..."
             mkdir -p .delta
             BASE_REF=$(git merge-base origin/main HEAD)
-            sgd --to HEAD --from $BASE_REF --output .delta || echo "Delta generation skipped."
+            sgd --to HEAD --from $BASE_REF --output .delta || echo "⚠️ Delta generation skipped."
             echo "Delta contents:"
             ls -R .delta || echo "No delta generated."
-  
+
       - run:
           name: Deploy changed metadata (or full project if none)
           command: |
@@ -93,21 +97,21 @@ commands:
             cd "$PROJECT_DIR"
             echo "Using Salesforce DX project at $PROJECT_DIR"
             if [ -d ".delta" ] && [ -n "$(ls -A .delta/force-app 2>/dev/null)" ]; then
-              echo "Deploying delta metadata..."
+              echo "🚀 Deploying delta metadata..."
               sf project deploy start \
                 --target-org target \
                 --metadata-dir .delta/force-app \
                 --ignore-conflicts \
                 --test-level "<< parameters.test_level >>" \
                 --wait 90
-            # else
-            #   echo "No delta detected; deploying full source..."
-            #   sf project deploy start \
-            #     --target-org target \
-            #     --ignore-conflicts \
-            #     --test-level "<< parameters.test_level >>" \
-            #     --wait 90
-            # fi
+            else
+              echo "⚠️ No delta detected; deploying full source..."
+              sf project deploy start \
+                --target-org target \
+                --ignore-conflicts \
+                --test-level "<< parameters.test_level >>" \
+                --wait 90
+            fi
 
       - run:
           name: Run Apex Tests and Export Results
@@ -115,7 +119,7 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             mkdir -p test-results
-            echo "Running Apex tests..."
+            echo "🧪 Running Apex tests..."
             sf apex run test \
               --target-org target \
               --test-level "<< parameters.test_level >>" \
