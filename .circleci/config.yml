@@ -236,26 +236,40 @@ commands:
             fi
 
       - run:
-          name: Run Apex Tests (only after successful deployment)
+          name: Run Apex Tests (JUnit output)
           command: |
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-            
+      
             if [ "$CHANGES_FOUND" = "true" ] && [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
-              mkdir -p test-results
-              echo "🧪 Running Apex tests..."
+              echo "🧪 Running Apex tests and exporting results for CircleCI..."
+      
+              # Always write to the top-level test-results directory
+              mkdir -p /home/circleci/project/test-results
+      
+              # Run Apex tests in JUnit XML format
               sf apex run test \
                 --target-org target \
-                --test-level << parameters.test_level >> \
+                --test-level RunLocalTests \
                 --code-coverage \
                 --result-format junit \
                 --wait 60 \
-                --output-dir test-results \
-                || echo "⚠️ Apex test failures detected but results will still be stored."
+                --output-dir /home/circleci/project/test-results \
+                || echo "⚠️ Some Apex tests failed — results will still be captured."
+      
+              echo "✅ Test execution complete. Results stored in /home/circleci/project/test-results"
             else
-              echo "✅ Skipping tests - no deployment occurred."
+              echo "✅ Skipping Apex tests — no deployment occurred."
             fi
+
+      - store_test_results:
+          path: test-results
+    
+      - store_artifacts:
+          path: test-results
+          destination: apex-test-results
+
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
