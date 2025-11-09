@@ -184,9 +184,6 @@ commands:
                 echo "🔍 No files to deploy to << parameters.tag_prefix >>."
                 echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
-            
-            # Restore IFS
-            IFS="$oldIFS"
 
       - run:
           name: Deploy Metadata (only if changes exist)
@@ -275,6 +272,11 @@ jobs:
       - deploy-with-tags:
           test_level: RunLocalTests
           tag_prefix: INTQA
+      - run:
+          name: Move test results to root (if exist)
+          command: |
+            mkdir -p test-results
+            find . -type d -name "test-results" ! -path "./test-results" -exec cp -r {}/* test-results/ \; || true
       - store_test_results:
           path: test-results
       - store_artifacts:
@@ -292,6 +294,11 @@ jobs:
       - deploy-with-tags:
           test_level: RunLocalTests
           tag_prefix: STAGING
+      - run:
+          name: Move test results to root (if exist)
+          command: |
+            mkdir -p test-results
+            find . -type d -name "test-results" ! -path "./test-results" -exec cp -r {}/* test-results/ \; || true
       - store_test_results:
           path: test-results
       - store_artifacts:
