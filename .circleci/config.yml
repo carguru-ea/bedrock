@@ -5,51 +5,39 @@ orbs:
 
 commands:
   # ----------------------------------------------------------
-  # Install Salesforce CLI, Java, and cache them for speed
+  # Install Salesforce CLI, Java, and cache them for speeds
   # ----------------------------------------------------------
   install-tooling:
     steps:
       - restore_cache:
           keys:
             - sf-cli-cache-v1
-
       - run:
-          name: Install Salesforce CLI, Java, and sfdx-git-delta
+          name: Install Salesforce CLI and dependencies (cached)
           command: |
-            set -e
-            echo "Installing Salesforce CLI..."
+            # Install Salesforce CLI
             if ! sf --version > /dev/null 2>&1; then
+              echo "Installing Salesforce CLI..."
               sudo npm install -g @salesforce/cli
             fi
 
-            echo "Installing Java..."
+            # Install Java
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
 
-            echo "Installing sfdx-git-delta..."
-            sudo npm install -g sfdx-git-delta
-
-            # 🔧 Ensure binary symlink is created manually (handles npm path issue)
-            if [ -f "/usr/local/lib/node_modules/sfdx-git-delta/bin/sgd.js" ]; then
-              sudo ln -sf /usr/local/lib/node_modules/sfdx-git-delta/bin/sgd.js /usr/local/bin/sgd
-              sudo chmod +x /usr/local/bin/sgd
-            fi
-
-            echo 'export PATH=$PATH:/usr/local/bin' >> "$BASH_ENV"
+            # Ensure PATH includes npm global bin
+            echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
 
+            # Verify installations
             echo "Verifying installs..."
             which sf || echo "⚠️ sf not found"
-            which sgd || echo "⚠️ sgd not found"
             sf --version
-            sgd --version || (echo "❌ sfdx-git-delta still not detected" && exit 1)
-
       - save_cache:
           key: sf-cli-cache-v1
           paths:
             - ~/.npm
             - /usr/local/lib/node_modules
             - /usr/local/bin
-
 
   # ----------------------------------------------------------
   # JWT Authentication
@@ -76,65 +64,201 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # Deploy code and run Apex tests
+  # Tag-based Delta Deployment (replacing sgd logic)
   # ----------------------------------------------------------
-  deploy:
+  deploy-with-tags:
     parameters:
       test_level:
         type: string
         default: RunLocalTests
+      tag_prefix:
+        type: string
+        description: "Tag prefix for the environment (e.g., INTQA, STAGING)"
     steps:
       - run:
-          name: Generate delta package (changed metadata only)
+          name: Find Most Recent Tag
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             echo "Using Salesforce DX project at $PROJECT_DIR"
-            echo "Detecting metadata changes since last main commit..."
-            mkdir -p .delta
-            BASE_REF=$(git merge-base origin/main HEAD)
-            sgd --to HEAD --from $BASE_REF --output .delta || echo "⚠️ Delta generation skipped."
-            echo "Delta contents:"
-            ls -R .delta || echo "No delta generated."
+            
+            # Fetch all tags
+            git fetch --tags
+            currentRef=0
+            currentTag=""
+
+            # Store tags in a variable and find the latest one
+            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
+            
+            if [ -n "$tags" ]; then
+              echo "Found existing << parameters.tag_prefix >> tags:"
+              echo "$tags"
+              for tag in $tags; do
+                refNum=$(echo $tag | cut -d '-' -f 2)
+                if [ "$refNum" -gt "$currentRef" ]; then
+                    currentRef=$refNum
+                    currentTag=$tag
+                fi
+              done
+              echo "Latest tag found: $currentTag (ref: $currentRef)"
+            else
+              echo "No << parameters.tag_prefix >> tags found. This will be the first deployment."
+              currentRef=0
+            fi
+            
+            # Export for next steps
+            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
+            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
 
       - run:
-          name: Deploy changed metadata (or full project if none)
+          name: Build Package Manifest from Tag Delta (With File Validation)
           command: |
+            source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-            echo "Using Salesforce DX project at $PROJECT_DIR"
-            if [ -d ".delta" ] && [ -n "$(ls -A .delta/force-app 2>/dev/null)" ]; then
-              echo "🚀 Deploying delta metadata..."
-              sf project deploy start \
-                --target-org target \
-                --metadata-dir .delta/force-app \
-                --ignore-conflicts \
-                --test-level "<< parameters.test_level >>" \
-                --wait 90
+            echo "Working from Salesforce project directory: $(pwd)"
+            
+            if [ "$CURRENT_REF" -eq 0 ]; then
+              # First deployment
+              echo "First deployment detected. Including all metadata files."
+              find force-app -type f \( -name "*.xml" -o -name "*.cls" -o -name "*.trigger" -o -name "*.page" -o -name "*.component" -o -name "*.js" -o -name "*.css" \) > files.txt || true
             else
-              echo "⚠️ No delta detected; deploying full source..."
-              sf project deploy start \
-                --target-org target \
-                --ignore-conflicts \
-                --test-level "<< parameters.test_level >>" \
-                --wait 90
+              # Delta deployment - get changed files from git but adjust the working directory context
+              echo "Delta deployment from tag: $CURRENT_TAG"
+              
+              # Use git diff with --relative flag to get paths relative to current directory
+              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' | grep -E '\.(cls|trigger|xml|page|component|js|css)$' > temp_files.txt || true
+              
+              echo "Changed files found from git diff:"
+              cat temp_files.txt || echo "No files found"
+              
+              # Filter out files that don't actually exist
+              > files.txt  # Clear the file
+              while IFS= read -r file; do
+                if [ -f "$file" ]; then
+                  echo "$file" >> files.txt
+                  echo "✅ Including: $file"
+                else
+                  echo "❌ Skipping (not found): $file"
+                fi
+              done < temp_files.txt
+              
+              echo "Final filtered files (only existing ones):"
+              cat files.txt || echo "No existing files found"
+            fi
+            
+            # Check if we have files to deploy
+            if [ -s files.txt ]; then
+                line_count=$(wc -l < files.txt)
+                echo "Files to include in manifest:"
+                echo "Total existing files found: $line_count"
+                
+                if [ $line_count -gt 0 ]; then
+                    # Show first 10 files for logging
+                    head -10 files.txt
+                    if [ $line_count -gt 10 ]; then
+                        echo "... and $(($line_count - 10)) more files"
+                    fi
+
+                    # Build an array from files.txt so filenames with spaces are preserved
+                    mapfile -t manifest_paths < files.txt
+                    echo "Generating package manifest..."
+                    sf project generate manifest -p "${manifest_paths[@]}"
+
+                    if [ -f "package.xml" ]; then
+                      echo "✅ Package manifest generated successfully"
+                      echo "export CHANGES_FOUND=true" >> $BASH_ENV
+                      
+                      echo "Package.xml contents:"
+                      cat package.xml
+                    else
+                      echo "❌ Failed to generate package.xml"
+                      echo "export CHANGES_FOUND=false" >> $BASH_ENV
+                    fi
+                else 
+                    echo "🔍 No existing files to deploy to << parameters.tag_prefix >>."
+                    echo "export CHANGES_FOUND=false" >> $BASH_ENV
+                fi
+            else 
+                echo "🔍 No files to deploy to << parameters.tag_prefix >>."
+                echo "export CHANGES_FOUND=false" >> $BASH_ENV
+            fi
+            
+            # Restore IFS
+            IFS="$oldIFS"
+
+      - run:
+          name: Deploy Metadata (only if changes exist)
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              if [ -f "package.xml" ]; then
+                echo "🚀 Deploying metadata changes..."
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level << parameters.test_level >> \
+                  --wait 360 \
+                  --ignore-conflicts
+                
+                echo "✅ Deployment completed successfully"
+                echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              else 
+                echo "❌ No package.xml found!"
+                exit 1
+              fi
+            else
+              echo "✅ No changes to deploy. Skipping deployment step."
+              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
             fi
 
       - run:
-          name: Run Apex Tests and Export Results
+          name: Set New Tag (only after successful deployment)
           command: |
+            source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-            mkdir -p test-results
-            echo "🧪 Running Apex tests..."
-            sf apex run test \
-              --target-org target \
-              --test-level "<< parameters.test_level >>" \
-              --code-coverage \
-              --result-format junit \
-              --wait 60 \
-              --output-dir test-results \
-              || echo "⚠️ Apex test failures detected but results will still be stored."
+            
+            if [ "$CHANGES_FOUND" = "true" ] && [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+              NEW_REF=$((CURRENT_REF + 1))
+              NEW_TAG="$TAG_PREFIX-$NEW_REF"
+              
+              echo "🏷️ Creating new tag: $NEW_TAG"
+              git config user.email "circleci@example.com"
+              git config user.name "CircleCI"
+              git tag "$NEW_TAG"
+              git push origin "$NEW_TAG"
+              
+              echo "✅ Successfully created and pushed tag: $NEW_TAG"
+            else
+              echo "✅ No deployment occurred or deployment failed, no new tag needed."
+            fi
+
+      - run:
+          name: Run Apex Tests (only after successful deployment)
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            if [ "$CHANGES_FOUND" = "true" ] && [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+              mkdir -p test-results
+              echo "🧪 Running Apex tests..."
+              sf apex run test \
+                --target-org target \
+                --test-level << parameters.test_level >> \
+                --code-coverage \
+                --result-format junit \
+                --wait 60 \
+                --output-dir test-results \
+                || echo "⚠️ Apex test failures detected but results will still be stored."
+            else
+              echo "✅ Skipping tests - no deployment occurred."
+            fi
 
 # -----------------------------------------------------------------
 # JOBS PER ENVIRONMENT
@@ -148,12 +272,13 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: INTQA
-      - deploy:
+      - deploy-with-tags:
           test_level: RunLocalTests
+          tag_prefix: INTQA
       - store_test_results:
-          path: bedrock-main/Bedrock/test-results
+          path: test-results
       - store_artifacts:
-          path: bedrock-main/Bedrock/test-results
+          path: test-results
           destination: apex-test-results
 
   deploy-staging:
@@ -164,12 +289,13 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: STAGINGUAT
-      - deploy:
+      - deploy-with-tags:
           test_level: RunLocalTests
+          tag_prefix: STAGING
       - store_test_results:
-          path: bedrock-main/Bedrock/test-results
+          path: test-results
       - store_artifacts:
-          path: bedrock-main/Bedrock/test-results
+          path: test-results
           destination: apex-test-results
 
 # -----------------------------------------------------------------
