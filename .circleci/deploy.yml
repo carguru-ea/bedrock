@@ -46,23 +46,48 @@ commands:
       target_env:
         type: string
     steps:
+  # ----------------------------------------------------------
+  # JWT Authentication (Fixed - No continuation.json needed)
+  # ----------------------------------------------------------
+  jwt-auth:
+    parameters:
+      target_env:
+        type: string
+    steps:
       - run:
-          name: Decode JWT Key
+          name: Decode JWT Key for << parameters.target_env >>
           command: |
-            TARGET_ENV="<< pipeline.parameters.target_env >>"
+            set -euo pipefail
+            TARGET_ENV="<< parameters.target_env >>"
             echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
-      
-            # Build the variable name dynamically (e.g. JWT_KEY_INTQA)
+
+            # Build the environment variable name dynamically (e.g., JWT_KEY_INTQA)
             VAR_NAME="JWT_KEY_${TARGET_ENV}"
-            JWT_KEY_VALUE=${!VAR_NAME}
-      
+            JWT_KEY_VALUE=${!VAR_NAME:-}
+
             if [ -z "$JWT_KEY_VALUE" ]; then
               echo "❌ JWT key not found for environment $TARGET_ENV"
               exit 1
             fi
-      
+
+            # Decode the key if it's base64 encoded; fallback to plain text
             echo "$JWT_KEY_VALUE" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_VALUE" > server.key
             chmod 600 server.key
+            echo "✅ JWT key decoded successfully."
+
+      - run:
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            echo "🔐 Authenticating to Salesforce org for << parameters.target_env >>..."
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
+            echo "✅ Authenticated successfully to Salesforce."
+
 
   # ----------------------------------------------------------
   # Tag-based Deployment
