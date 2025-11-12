@@ -3,14 +3,13 @@ version: 2.1
 parameters:
   target_env:
     type: string
-    default: "INTQA"        # 👈 default ensures schema passes
+    default: "INTQA"        # default ensures schema passes
   tag_prefix:
     type: string
-    default: "INTQA"        # 👈 required default, overridden dynamically
+    default: "INTQA"        # required default, overridden dynamically
 
 orbs:
   node: circleci/node@5.0.2
-
 
 commands:
   # ----------------------------------------------------------
@@ -38,14 +37,6 @@ commands:
             - /usr/local/lib/node_modules
             - /usr/local/bin
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
-  jwt-auth:
-    parameters:
-      target_env:
-        type: string
-    steps:
   # ----------------------------------------------------------
   # JWT Authentication (Fixed - No continuation.json needed)
   # ----------------------------------------------------------
@@ -87,7 +78,6 @@ commands:
               --alias target \
               --set-default
             echo "✅ Authenticated successfully to Salesforce."
-
 
   # ----------------------------------------------------------
   # Tag-based Deployment
