@@ -45,6 +45,14 @@ commands:
       target_env:
         type: string
     steps:
+  # ----------------------------------------------------------
+  # JWT Authentication (Final - No continuation.json needed)
+  # ----------------------------------------------------------
+  jwt-auth:
+    parameters:
+      target_env:
+        type: string
+    steps:
       - run:
           name: Decode JWT Key for << parameters.target_env >>
           command: |
@@ -78,6 +86,7 @@ commands:
               --alias target \
               --set-default
             echo "✅ Authenticated successfully to Salesforce."
+
 
   # ----------------------------------------------------------
   # Tag-based Deployment
