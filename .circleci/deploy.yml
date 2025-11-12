@@ -38,7 +38,7 @@ commands:
             - /usr/local/bin
 
   # ----------------------------------------------------------
-  # JWT Authentication (Final - No continuation.json needed)
+  # JWT Authentication (Final - no continuation.json)
   # ----------------------------------------------------------
   jwt-auth:
     parameters:
@@ -52,7 +52,6 @@ commands:
             TARGET_ENV="<< parameters.target_env >>"
             echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
 
-            # Build the environment variable name dynamically (e.g., JWT_KEY_INTQA)
             VAR_NAME="JWT_KEY_${TARGET_ENV}"
             JWT_KEY_VALUE=${!VAR_NAME:-}
 
@@ -61,7 +60,6 @@ commands:
               exit 1
             fi
 
-            # Decode the key if it's base64 encoded; fallback to plain text
             echo "$JWT_KEY_VALUE" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_VALUE" > server.key
             chmod 600 server.key
             echo "✅ JWT key decoded successfully."
@@ -78,6 +76,7 @@ commands:
               --alias target \
               --set-default
             echo "✅ Authenticated successfully to Salesforce."
+
 
   # ----------------------------------------------------------
   # Tag-based Deployment
