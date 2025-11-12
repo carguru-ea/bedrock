@@ -136,4 +136,45 @@ commands:
 
 # -----------------------------------------------------------------
 # JOBS
-# ---------------------------------------------------------
+# -----------------------------------------------------------------
+jobs:
+  deploy:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: << pipeline.parameters.target_env >>
+      - deploy-with-tags:
+          tag_prefix: << pipeline.parameters.tag_prefix >>
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: apex-test-results
+
+  cancel-deploy-job:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - cancel-deploy:
+          target_env: << pipeline.parameters.target_env >>
+
+# -----------------------------------------------------------------
+# WORKFLOW
+# -----------------------------------------------------------------
+workflows:
+  version: 2
+  deploy-pipeline:
+    jobs:
+      - deploy:
+          context: sf-<< pipeline.parameters.target_env >>
+      - cancel-deploy-job:
+          requires:
+            - deploy
+          filters:
+            branches:
+              only:
+                - BRInt
+                - BRStaging
