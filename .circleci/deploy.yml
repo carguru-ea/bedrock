@@ -40,7 +40,7 @@ commands:
   # ----------------------------------------------------------
   # JWT Authentication (Final - no continuation.json)
   # ----------------------------------------------------------
-  jwt-auth:
+    jwt-auth:
     parameters:
       target_env:
         type: string
@@ -67,7 +67,6 @@ commands:
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
-            echo "🔐 Authenticating to Salesforce org for << parameters.target_env >>..."
             sf org login jwt \
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
