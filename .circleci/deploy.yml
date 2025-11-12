@@ -19,7 +19,7 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - sf-cli-cache-v1
+            - sf-cli-cache-v2
       - run:
           name: Install Salesforce CLI and dependencies
           command: |
@@ -31,7 +31,7 @@ commands:
             source "$BASH_ENV"
             sf --version
       - save_cache:
-          key: sf-cli-cache-v1
+          key: sf-cli-cache-v2
           paths:
             - ~/.npm
             - /usr/local/lib/node_modules
