@@ -3,10 +3,10 @@ version: 2.1
 parameters:
   target_env:
     type: string
-    default: "INTQA"        # default ensures schema passes
+    default: "INTQA"
   tag_prefix:
     type: string
-    default: "INTQA"        # required default, overridden dynamically
+    default: "INTQA"
 
 orbs:
   node: circleci/node@5.0.2
@@ -38,43 +38,44 @@ commands:
             - /usr/local/bin
 
   # ----------------------------------------------------------
-  # JWT Authentication (Final - no continuation.json)
+  # JWT Authentication
   # ----------------------------------------------------------
   jwt-auth:
-  parameters:
-    target_env:
-      type: string
-  steps:
-    - run:
-        name: Decode JWT Key for << parameters.target_env >>
-        command: |
-          set -euo pipefail
-          TARGET_ENV="<< parameters.target_env >>"
-          echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
+    parameters:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Decode JWT Key for << parameters.target_env >>
+          command: |
+            set -euo pipefail
+            TARGET_ENV="<< parameters.target_env >>"
+            echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
 
-          VAR_NAME="JWT_KEY_${TARGET_ENV}"
-          JWT_KEY_VALUE=${!VAR_NAME:-}
+            VAR_NAME="JWT_KEY_${TARGET_ENV}"
+            JWT_KEY_VALUE=${!VAR_NAME:-}
 
-          if [ -z "$JWT_KEY_VALUE" ]; then
-            echo "❌ JWT key not found for environment $TARGET_ENV"
-            exit 1
-          fi
+            if [ -z "$JWT_KEY_VALUE" ]; then
+              echo "❌ JWT key not found for environment $TARGET_ENV"
+              exit 1
+            fi
 
-          echo "$JWT_KEY_VALUE" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_VALUE" > server.key
-          chmod 600 server.key
-          echo "✅ JWT key decoded successfully."
+            echo "$JWT_KEY_VALUE" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_VALUE" > server.key
+            chmod 600 server.key
+            echo "✅ JWT key decoded successfully."
 
-    - run:
-        name: Authenticate to Salesforce (<< parameters.target_env >>)
-        command: |
-          sf org login jwt \
-            --username "${SF_USERNAME_<< parameters.target_env >>}" \
-            --jwt-key-file server.key \
-            --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-            --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
-            --alias target \
-            --set-default
-          echo "✅ Authenticated successfully to Salesforce."
+      - run:
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
+            echo "✅ Authenticated successfully to Salesforce."
+
 
 
   # ----------------------------------------------------------
