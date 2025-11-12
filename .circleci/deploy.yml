@@ -49,12 +49,12 @@ commands:
       - run:
           name: Decode JWT Key
           command: |
-            TARGET_ENV=$(jq -r '.parameters.target_env' continuation.json)
+            TARGET_ENV="<< pipeline.parameters.target_env >>"
             echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
       
-            # Get the JWT key variable dynamically
+            # Build the variable name dynamically (e.g. JWT_KEY_INTQA)
             VAR_NAME="JWT_KEY_${TARGET_ENV}"
-            JWT_KEY_VALUE=$(eval echo "\$$VAR_NAME")
+            JWT_KEY_VALUE=${!VAR_NAME}
       
             if [ -z "$JWT_KEY_VALUE" ]; then
               echo "❌ JWT key not found for environment $TARGET_ENV"
