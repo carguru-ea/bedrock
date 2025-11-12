@@ -38,14 +38,6 @@ commands:
             - /usr/local/bin
 
   # ----------------------------------------------------------
-  # JWT Authentication (Fixed - No continuation.json needed)
-  # ----------------------------------------------------------
-  jwt-auth:
-    parameters:
-      target_env:
-        type: string
-    steps:
-  # ----------------------------------------------------------
   # JWT Authentication (Final - No continuation.json needed)
   # ----------------------------------------------------------
   jwt-auth:
@@ -86,7 +78,6 @@ commands:
               --alias target \
               --set-default
             echo "✅ Authenticated successfully to Salesforce."
-
 
   # ----------------------------------------------------------
   # Tag-based Deployment
