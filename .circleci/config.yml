@@ -19,16 +19,25 @@ commands:
       - run:
           name: Install Salesforce CLI and Java
           command: |
+            echo "🔧 [install-tooling] Starting tooling installation..."
             if ! sf --version > /dev/null 2>&1; then
+              echo "📦 [install-tooling] Salesforce CLI not found. Installing..."
               sudo npm install -g @salesforce/cli
+            else
+              echo "✅ [install-tooling] Salesforce CLI already installed."
             fi
 
+            echo "☕ [install-tooling] Installing Java (openjdk-17-jdk)..."
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-            
+
+            echo "🧭 [install-tooling] Updating PATH with npm global bin..."
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
 
+            echo "🔍 [install-tooling] sf --version:"
             sf --version
+
+            echo "✅ [install-tooling] Tooling setup completed."
       - save_cache:
           key: sf-cli-cache-v1
           paths:
@@ -43,14 +52,16 @@ commands:
   jwt-auth-intqa:
     steps:
       - run:
-          name: Decode JWT Key
+          name: Decode JWT Key (INTQA)
           command: |
+            echo "🔐 [jwt-auth-intqa] Decoding JWT key for INTQA..."
             echo "$JWT_KEY_INTQA" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_INTQA" > server.key
             chmod 600 server.key
-
+            echo "✅ [jwt-auth-intqa] JWT key prepared."
       - run:
           name: Authenticate to INTQA
           command: |
+            echo "🔑 [jwt-auth-intqa] Authenticating to INTQA org..."
             sf org login jwt \
               --username "$SF_USERNAME_INTQA" \
               --jwt-key-file server.key \
@@ -59,6 +70,8 @@ commands:
               --alias target \
               --set-default
 
+            echo "✅ [jwt-auth-intqa] Authenticated to INTQA as default alias 'target'."
+
 
   # ----------------------------------------------------------
   # JWT Authentication (STAGING)
@@ -66,14 +79,16 @@ commands:
   jwt-auth-staging:
     steps:
       - run:
-          name: Decode JWT Key
+          name: Decode JWT Key (STAGING)
           command: |
+            echo "🔐 [jwt-auth-staging] Decoding JWT key for STAGING..."
             echo "$JWT_KEY_STAGINGUAT" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_STAGINGUAT" > server.key
             chmod 600 server.key
-
+            echo "✅ [jwt-auth-staging] JWT key prepared."
       - run:
           name: Authenticate to STAGINGUAT
           command: |
+            echo "🔑 [jwt-auth-staging] Authenticating to STAGINGUAT org..."
             sf org login jwt \
               --username "$SF_USERNAME_STAGINGUAT" \
               --jwt-key-file server.key \
@@ -82,6 +97,8 @@ commands:
               --alias target \
               --set-default
 
+            echo "✅ [jwt-auth-staging] Authenticated to STAGINGUAT as default alias 'target'."
+
 
   # ----------------------------------------------------------
   # JWT Authentication (PROD)
@@ -89,14 +106,16 @@ commands:
   jwt-auth-prod:
     steps:
       - run:
-          name: Decode JWT Key
+          name: Decode JWT Key (PROD)
           command: |
+            echo "🔐 [jwt-auth-prod] Decoding JWT key for PROD..."
             echo "$JWT_KEY_PROD" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_PROD" > server.key
             chmod 600 server.key
-
+            echo "✅ [jwt-auth-prod] JWT key prepared."
       - run:
           name: Authenticate to PROD
           command: |
+            echo "🔑 [jwt-auth-prod] Authenticating to PROD org..."
             sf org login jwt \
               --username "$SF_USERNAME_PROD" \
               --jwt-key-file server.key \
@@ -105,87 +124,449 @@ commands:
               --alias target \
               --set-default
 
+            echo "✅ [jwt-auth-prod] Authenticated to PROD as default alias 'target'."
+
+
   # ----------------------------------------------------------
-  # Delta Deployment Logic for INTQA
+  # Delta Deployment Logic for INTQA (BRInt tags)
   # ----------------------------------------------------------
   deploy-intqa-with-tags:
     steps:
       - run:
-          name: Fetch latest tags
-          command: git fetch --tags
-      - run:
-          name: Determine latest tag
+          name: Context Info (INTQA)
           command: |
-            PREFIX="INTQA"
+            echo "📌 [deploy-intqa] Starting INTQA deploy with tags..."
+            echo "📌 [deploy-intqa] CIRCLE_BRANCH: $CIRCLE_BRANCH"
+            echo "📌 [deploy-intqa] Using prefix: BRInt"
+            echo "📂 [deploy-intqa] Current directory:"
+            pwd
+            echo "📁 [deploy-intqa] Repo contents:"
+            ls -R
+      - run:
+          name: Fetch latest tags (INTQA)
+          command: |
+            echo "📥 [deploy-intqa] Fetching tags from remote..."
+            git fetch --tags
+            echo "🏷 [deploy-intqa] All tags:"
+            git tag -l
+      - run:
+          name: Determine latest BRInt tag
+          command: |
+            PREFIX="BRInt"
             currentRef=0
             currentTag=""
 
-            tags=$(git tag -l "INTQA-*" | sort -V)
+            echo "🔎 [deploy-intqa] Looking for tags with prefix: $PREFIX-*"
+            tags=$(git tag -l "${PREFIX}-*")
+            echo "🏷 [deploy-intqa] Matching tags: $tags"
+
             if [ -n "$tags" ]; then
               for tag in $tags; do
                 num=$(echo "$tag" | awk -F'-' '{print $NF}')
+                echo "➡️ [deploy-intqa] Checking tag: $tag (num=$num)"
                 if [ "$num" -gt "$currentRef" ]; then
                   currentRef="$num"
                   currentTag="$tag"
                 fi
               done
+            else
+              echo "⚠️ [deploy-intqa] No tags found for prefix $PREFIX. This will be the first deploy with tagging."
             fi
+
+            echo "✔️ [deploy-intqa] Latest tag: $currentTag"
+            echo "✔️ [deploy-intqa] Current reference number: $currentRef"
 
             echo "export PREFIX=$PREFIX" >> $BASH_ENV
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
             echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
-
       - run:
-          name: Build delta package
+          name: Build delta package (INTQA)
           command: |
             source $BASH_ENV
+            echo "📦 [deploy-intqa] Building delta package..."
+            echo "📦 [deploy-intqa] CURRENT_TAG: $CURRENT_TAG"
+            echo "📦 [deploy-intqa] CURRENT_REF: $CURRENT_REF"
+
             if [ "$CURRENT_REF" -eq 0 ]; then
+              echo "⚠️ [deploy-intqa] No previous tags. Deploying FULL package from force-app..."
               find force-app -type f > files.txt
             else
+              echo "🔁 [deploy-intqa] Generating delta from $CURRENT_TAG → HEAD..."
               git diff --name-only "$CURRENT_TAG" HEAD | grep "^force-app/" > files.txt || true
             fi
 
             if [ ! -s files.txt ]; then
+              echo "❌ [deploy-intqa] No changes found under force-app. Skipping deployment."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
               exit 0
             fi
 
-            mapfile -t manifest_paths < files.txt
-            sf project generate manifest -p "${manifest_paths[@]}"
-            echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            echo "📄 [deploy-intqa] Changed files:"
+            cat files.txt
 
+            mapfile -t manifest_paths < files.txt
+            echo "🧾 [deploy-intqa] Generating manifest from changed files..."
+            sf project generate manifest -p "${manifest_paths[@]}"
+
+            echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            echo "✅ [deploy-intqa] Manifest generated and CHANGES_FOUND=true."
       - run:
           name: Deploy to INTQA
           command: |
             source $BASH_ENV
-            if [ "$CHANGES_FOUND" != "true" ]; then exit 0; fi
+            echo "🚀 [deploy-intqa] Starting deployment to INTQA..."
+            echo "🚀 [deploy-intqa] CHANGES_FOUND = ${CHANGES_FOUND:-unset}"
 
-            echo "Deploying to INTQA..."
+            if [ "${CHANGES_FOUND:-false}" != "true" ]; then 
+              echo "⏭️ [deploy-intqa] Skipping deploy because CHANGES_FOUND != true."
+              exit 0
+            fi
+
+            echo "📤 [deploy-intqa] Running sf project deploy start..."
             DEPLOY_OUT=$(sf project deploy start --manifest package.xml --target-org target --wait 0 --verbose)
-            JOB_ID=$(echo "$DEPLOY_OUT" | grep -o "0Af[a-zA-Z0-9]\+")
-            echo "Job ID: $JOB_ID"
+            echo "📤 [deploy-intqa] Raw deploy output:"
+            echo "$DEPLOY_OUT"
 
+            JOB_ID=$(echo "$DEPLOY_OUT" | grep -o "0Af[a-zA-Z0-9]\+")
+            echo "🆔 [deploy-intqa] Deployment Job ID: $JOB_ID"
+
+            if [ -z "$JOB_ID" ]; then
+              echo "❌ [deploy-intqa] Could not parse JOB_ID from deploy output. Failing."
+              exit 1
+            fi
+
+            echo "🔄 [deploy-intqa] Polling deployment status..."
             while true; do
               STATUS=$(sf project deploy report --job-id "$JOB_ID" --json | jq -r ".result.status")
-              echo "Status: $STATUS"
+              echo "📌 [deploy-intqa] Status: $STATUS"
               if [[ "$STATUS" == "Succeeded" || "$STATUS" == "Failed" ]]; then break; fi
-              sleep 20
+              sleep 15
             done
 
-            if [ "$STATUS" == "Failed" ]; then exit 1; fi
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            if [ "$STATUS" == "Failed" ]; then
+              echo "❌ [deploy-intqa] Deployment failed."
+              exit 1
+            fi
 
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            echo "🎉 [deploy-intqa] Deployment succeeded!"
       - run:
-          name: Create new INTQA tag
+          name: Create new BRInt tag
           command: |
             source $BASH_ENV
-            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+
+            echo "🏷 [deploy-intqa] Preparing to create new tag..."
+            echo "🏷 [deploy-intqa] PREFIX = ${PREFIX:-unset}"
+            echo "🏷 [deploy-intqa] CURRENT_REF = ${CURRENT_REF:-unset}"
+            echo "🏷 [deploy-intqa] DEPLOYMENT_SUCCESS = ${DEPLOYMENT_SUCCESS:-unset}"
+
+            if [ "${DEPLOYMENT_SUCCESS:-false}" = "true" ]; then
               NEW_REF=$((CURRENT_REF + 1))
-              NEW_TAG="$PREFIX-$NEW_REF"
+              NEW_TAG="${PREFIX}-${NEW_REF}"
+
+              echo "🏷 [deploy-intqa] Creating tag: $NEW_TAG"
               git tag "$NEW_TAG"
               git push origin "$NEW_TAG"
-              echo "Created tag: $NEW_TAG"
+
+              echo "🎉 [deploy-intqa] Tag pushed successfully: $NEW_TAG"
+            else
+              echo "⚠️ [deploy-intqa] Deployment not successful — skipping tag creation."
             fi
+
+
+  # ----------------------------------------------------------
+  # Delta Deployment Logic for STAGING (BRStaging tags)
+  # ----------------------------------------------------------
+  deploy-staging-with-tags:
+    steps:
+      - run:
+          name: Context Info (STAGING)
+          command: |
+            echo "📌 [deploy-staging] Starting STAGING deploy with tags..."
+            echo "📌 [deploy-staging] CIRCLE_BRANCH: $CIRCLE_BRANCH"
+            echo "📌 [deploy-staging] Using prefix: BRStaging"
+            echo "📂 [deploy-staging] Current directory:"
+            pwd
+            echo "📁 [deploy-staging] Repo contents:"
+            ls -R
+      - run:
+          name: Fetch latest tags (STAGING)
+          command: |
+            echo "📥 [deploy-staging] Fetching tags from remote..."
+            git fetch --tags
+            echo "🏷 [deploy-staging] All tags:"
+            git tag -l
+      - run:
+          name: Determine latest BRStaging tag
+          command: |
+            PREFIX="BRStaging"
+            currentRef=0
+            currentTag=""
+
+            echo "🔎 [deploy-staging] Looking for tags with prefix: $PREFIX-*"
+            tags=$(git tag -l "${PREFIX}-*")
+            echo "🏷 [deploy-staging] Matching tags: $tags"
+
+            if [ -n "$tags" ]; then
+              for tag in $tags; do
+                num=$(echo "$tag" | awk -F'-' '{print $NF}')
+                echo "➡️ [deploy-staging] Checking tag: $tag (num=$num)"
+                if [ "$num" -gt "$currentRef" ]; then
+                  currentRef="$num"
+                  currentTag="$tag"
+                fi
+              done
+            else
+              echo "⚠️ [deploy-staging] No tags found for prefix $PREFIX. This will be the first deploy with tagging."
+            fi
+
+            echo "✔️ [deploy-staging] Latest tag: $currentTag"
+            echo "✔️ [deploy-staging] Current reference number: $currentRef"
+
+            echo "export PREFIX=$PREFIX" >> $BASH_ENV
+            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
+      - run:
+          name: Build delta package (STAGING)
+          command: |
+            source $BASH_ENV
+            echo "📦 [deploy-staging] Building delta package..."
+            echo "📦 [deploy-staging] CURRENT_TAG: $CURRENT_TAG"
+            echo "📦 [deploy-staging] CURRENT_REF: $CURRENT_REF"
+
+            if [ "$CURRENT_REF" -eq 0 ]; then
+              echo "⚠️ [deploy-staging] No previous tags. Deploying FULL package from force-app..."
+              find force-app -type f > files.txt
+            else
+              echo "🔁 [deploy-staging] Generating delta from $CURRENT_TAG → HEAD..."
+              git diff --name-only "$CURRENT_TAG" HEAD | grep "^force-app/" > files.txt || true
+            fi
+
+            if [ ! -s files.txt ]; then
+              echo "❌ [deploy-staging] No changes found under force-app. Skipping deployment."
+              echo "export CHANGES_FOUND=false" >> $BASH_ENV
+              exit 0
+            fi
+
+            echo "📄 [deploy-staging] Changed files:"
+            cat files.txt
+
+            mapfile -t manifest_paths < files.txt
+            echo "🧾 [deploy-staging] Generating manifest from changed files..."
+            sf project generate manifest -p "${manifest_paths[@]}"
+
+            echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            echo "✅ [deploy-staging] Manifest generated and CHANGES_FOUND=true."
+      - run:
+          name: Deploy to STAGING
+          command: |
+            source $BASH_ENV
+            echo "🚀 [deploy-staging] Starting deployment to STAGING..."
+            echo "🚀 [deploy-staging] CHANGES_FOUND = ${CHANGES_FOUND:-unset}"
+
+            if [ "${CHANGES_FOUND:-false}" != "true" ]; then 
+              echo "⏭️ [deploy-staging] Skipping deploy because CHANGES_FOUND != true."
+              exit 0
+            fi
+
+            echo "📤 [deploy-staging] Running sf project deploy start..."
+            DEPLOY_OUT=$(sf project deploy start --manifest package.xml --target-org target --wait 0 --verbose)
+            echo "📤 [deploy-staging] Raw deploy output:"
+            echo "$DEPLOY_OUT"
+
+            JOB_ID=$(echo "$DEPLOY_OUT" | grep -o "0Af[a-zA-Z0-9]\+")
+            echo "🆔 [deploy-staging] Deployment Job ID: $JOB_ID"
+
+            if [ -z "$JOB_ID" ]; then
+              echo "❌ [deploy-staging] Could not parse JOB_ID from deploy output. Failing."
+              exit 1
+            fi
+
+            echo "🔄 [deploy-staging] Polling deployment status..."
+            while true; do
+              STATUS=$(sf project deploy report --job-id "$JOB_ID" --json | jq -r ".result.status")
+              echo "📌 [deploy-staging] Status: $STATUS"
+              if [[ "$STATUS" == "Succeeded" || "$STATUS" == "Failed" ]]; then break; fi
+              sleep 15
+            done
+
+            if [ "$STATUS" == "Failed" ]; then
+              echo "❌ [deploy-staging] Deployment failed."
+              exit 1
+            fi
+
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            echo "🎉 [deploy-staging] Deployment succeeded!"
+      - run:
+          name: Create new BRStaging tag
+          command: |
+            source $BASH_ENV
+
+            echo "🏷 [deploy-staging] Preparing to create new tag..."
+            echo "🏷 [deploy-staging] PREFIX = ${PREFIX:-unset}"
+            echo "🏷 [deploy-staging] CURRENT_REF = ${CURRENT_REF:-unset}"
+            echo "🏷 [deploy-staging] DEPLOYMENT_SUCCESS = ${DEPLOYMENT_SUCCESS:-unset}"
+
+            if [ "${DEPLOYMENT_SUCCESS:-false}" = "true" ]; then
+              NEW_REF=$((CURRENT_REF + 1))
+              NEW_TAG="${PREFIX}-${NEW_REF}"
+
+              echo "🏷 [deploy-staging] Creating tag: $NEW_TAG"
+              git tag "$NEW_TAG"
+              git push origin "$NEW_TAG"
+
+              echo "🎉 [deploy-staging] Tag pushed successfully: $NEW_TAG"
+            else
+              echo "⚠️ [deploy-staging] Deployment not successful — skipping tag creation."
+            fi
+
+
+  # ----------------------------------------------------------
+  # Delta Deployment Logic for PROD (main tags)
+  # ----------------------------------------------------------
+  deploy-prod-with-tags:
+    steps:
+      - run:
+          name: Context Info (PROD)
+          command: |
+            echo "📌 [deploy-prod] Starting PROD deploy with tags..."
+            echo "📌 [deploy-prod] CIRCLE_BRANCH: $CIRCLE_BRANCH"
+            echo "📌 [deploy-prod] Using prefix: main"
+            echo "📂 [deploy-prod] Current directory:"
+            pwd
+            echo "📁 [deploy-prod] Repo contents:"
+            ls -R
+      - run:
+          name: Fetch latest tags (PROD)
+          command: |
+            echo "📥 [deploy-prod] Fetching tags from remote..."
+            git fetch --tags
+            echo "🏷 [deploy-prod] All tags:"
+            git tag -l
+      - run:
+          name: Determine latest main tag
+          command: |
+            PREFIX="main"
+            currentRef=0
+            currentTag=""
+
+            echo "🔎 [deploy-prod] Looking for tags with prefix: $PREFIX-*"
+            tags=$(git tag -l "${PREFIX}-*")
+            echo "🏷 [deploy-prod] Matching tags: $tags"
+
+            if [ -n "$tags" ]; then
+              for tag in $tags; do
+                num=$(echo "$tag" | awk -F'-' '{print $NF}')
+                echo "➡️ [deploy-prod] Checking tag: $tag (num=$num)"
+                if [ "$num" -gt "$currentRef" ]; then
+                  currentRef="$num"
+                  currentTag="$tag"
+                fi
+              done
+            else
+              echo "⚠️ [deploy-prod] No tags found for prefix $PREFIX. This will be the first deploy with tagging."
+            fi
+
+            echo "✔️ [deploy-prod] Latest tag: $currentTag"
+            echo "✔️ [deploy-prod] Current reference number: $currentRef"
+
+            echo "export PREFIX=$PREFIX" >> $BASH_ENV
+            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
+      - run:
+          name: Build delta package (PROD)
+          command: |
+            source $BASH_ENV
+            echo "📦 [deploy-prod] Building delta package..."
+            echo "📦 [deploy-prod] CURRENT_TAG: $CURRENT_TAG"
+            echo "📦 [deploy-prod] CURRENT_REF: $CURRENT_REF"
+
+            if [ "$CURRENT_REF" -eq 0 ]; then
+              echo "⚠️ [deploy-prod] No previous tags. Deploying FULL package from force-app..."
+              find force-app -type f > files.txt
+            else
+              echo "🔁 [deploy-prod] Generating delta from $CURRENT_TAG → HEAD..."
+              git diff --name-only "$CURRENT_TAG" HEAD | grep "^force-app/" > files.txt || true
+            fi
+
+            if [ ! -s files.txt ]; then
+              echo "❌ [deploy-prod] No changes found under force-app. Skipping deployment."
+              echo "export CHANGES_FOUND=false" >> $BASH_ENV
+              exit 0
+            fi
+
+            echo "📄 [deploy-prod] Changed files:"
+            cat files.txt
+
+            mapfile -t manifest_paths < files.txt
+            echo "🧾 [deploy-prod] Generating manifest from changed files..."
+            sf project generate manifest -p "${manifest_paths[@]}"
+
+            echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            echo "✅ [deploy-prod] Manifest generated and CHANGES_FOUND=true."
+      - run:
+          name: Deploy to PROD
+          command: |
+            source $BASH_ENV
+            echo "🚀 [deploy-prod] Starting deployment to PROD..."
+            echo "🚀 [deploy-prod] CHANGES_FOUND = ${CHANGES_FOUND:-unset}"
+
+            if [ "${CHANGES_FOUND:-false}" != "true" ]; then 
+              echo "⏭️ [deploy-prod] Skipping deploy because CHANGES_FOUND != true."
+              exit 0
+            fi
+
+            echo "📤 [deploy-prod] Running sf project deploy start..."
+            DEPLOY_OUT=$(sf project deploy start --manifest package.xml --target-org target --wait 0 --verbose)
+            echo "📤 [deploy-prod] Raw deploy output:"
+            echo "$DEPLOY_OUT"
+
+            JOB_ID=$(echo "$DEPLOY_OUT" | grep -o "0Af[a-zA-Z0-9]\+")
+            echo "🆔 [deploy-prod] Deployment Job ID: $JOB_ID"
+
+            if [ -z "$JOB_ID" ]; then
+              echo "❌ [deploy-prod] Could not parse JOB_ID from deploy output. Failing."
+              exit 1
+            fi
+
+            echo "🔄 [deploy-prod] Polling deployment status..."
+            while true; do
+              STATUS=$(sf project deploy report --job-id "$JOB_ID" --json | jq -r ".result.status")
+              echo "📌 [deploy-prod] Status: $STATUS"
+              if [[ "$STATUS" == "Succeeded" || "$STATUS" == "Failed" ]]; then break; fi
+              sleep 15
+            done
+
+            if [ "$STATUS" == "Failed" ]; then
+              echo "❌ [deploy-prod] Deployment failed."
+              exit 1
+            fi
+
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            echo "🎉 [deploy-prod] Deployment succeeded!"
+      - run:
+          name: Create new main tag
+          command: |
+            source $BASH_ENV
+
+            echo "🏷 [deploy-prod] Preparing to create new tag..."
+            echo "🏷 [deploy-prod] PREFIX = ${PREFIX:-unset}"
+            echo "🏷 [deploy-prod] CURRENT_REF = ${CURRENT_REF:-unset}"
+            echo "🏷 [deploy-prod] DEPLOYMENT_SUCCESS = ${DEPLOYMENT_SUCCESS:-unset}"
+
+            if [ "${DEPLOYMENT_SUCCESS:-false}" = "true" ]; then
+              NEW_REF=$((CURRENT_REF + 1))
+              NEW_TAG="${PREFIX}-${NEW_REF}"
+
+              echo "🏷 [deploy-prod] Creating tag: $NEW_TAG"
+              git tag "$NEW_TAG"
+              git push origin "$NEW_TAG"
+
+              echo "🎉 [deploy-prod] Tag pushed successfully: $NEW_TAG"
+            else
+              echo "⚠️ [deploy-prod] Deployment not successful — skipping tag creation."
+            fi
+
 
 # =====================================================================
 # JOBS  
@@ -203,7 +584,7 @@ jobs:
       - checkout
       - install-tooling
       - jwt-auth-prod
-      - deploy-intqa-with-tags   # (TODO replace with prod deploy logic)
+      - deploy-prod-with-tags   # PROD-specific deploy logic
 
 
   # ------------------------------
@@ -216,7 +597,7 @@ jobs:
       - checkout
       - install-tooling
       - jwt-auth-staging
-      - deploy-intqa-with-tags   # (TODO replace with staging deploy logic)
+      - deploy-staging-with-tags   # STAGING-specific deploy logic
 
 
   # ------------------------------
@@ -255,7 +636,7 @@ jobs:
       - checkout
       - install-tooling
       - jwt-auth-staging
-      - deploy-intqa-with-tags
+      - deploy-staging-with-tags
 
 
   # ------------------------------
@@ -268,7 +649,7 @@ jobs:
       - checkout
       - install-tooling
       - jwt-auth-prod
-      - deploy-intqa-with-tags
+      - deploy-prod-with-tags
 
 
 # =====================================================================
