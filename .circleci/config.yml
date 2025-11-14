@@ -3,21 +3,9 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# ============================================================
-# GLOBAL SETUP — make project root persistent
-# ============================================================
 commands:
-
-  set-project-dir:
-    steps:
-      - run:
-          name: Set SFDX project directory
-          command: |
-            echo "export PROJECT_DIR=bedrock-main" >> $BASH_ENV
-            echo "📁 SFDX Project Root: bedrock-main"
-
   # ----------------------------------------------------------
-  # Install Salesforce CLI + Java
+  # Install Salesforce CLI, Java, and cache them for speeds
   # ----------------------------------------------------------
   install-tooling:
     steps:
@@ -25,15 +13,19 @@ commands:
           keys:
             - sf-cli-cache-v1
       - run:
-          name: Install Salesforce CLI + Java
+          name: Install Salesforce CLI and dependencies (cached)
           command: |
             if ! sf --version > /dev/null 2>&1; then
+              echo "Installing Salesforce CLI..."
               sudo npm install -g @salesforce/cli
             fi
+
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
             sf --version
+
       - save_cache:
           key: sf-cli-cache-v1
           paths:
@@ -42,248 +34,336 @@ commands:
             - /usr/local/bin
 
   # ----------------------------------------------------------
-  # JWT AUTH for INTQA
+  # JWT Authentication
   # ----------------------------------------------------------
-  jwt-auth-intqa:
-    steps:
-      - run:
-          name: Authenticate INTQA
-          command: |
-            echo "$JWT_KEY_INTQA" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_INTQA" > server.key
-            chmod 600 server.key
-            sf org login jwt \
-              --username "$SF_USERNAME_INTQA" \
-              --client-id "$SF_CONSUMER_KEY_INTQA" \
-              --jwt-key-file server.key \
-              --instance-url "$SF_INSTANCEURL_INTQA" \
-              --alias target \
-              --set-default
-
-  # ----------------------------------------------------------
-  # JWT AUTH for STAGING
-  # ----------------------------------------------------------
-  jwt-auth-staging:
-    steps:
-      - run:
-          name: Authenticate STAGING
-          command: |
-            echo "$JWT_KEY_STAGINGUAT" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_STAGINGUAT" > server.key
-            chmod 600 server.key
-            sf org login jwt \
-              --username "$SF_USERNAME_STAGINGUAT" \
-              --client-id "$SF_CONSUMER_KEY_STAGINGUAT" \
-              --jwt-key-file server.key \
-              --instance-url "$SF_INSTANCEURL_STAGINGUAT" \
-              --alias target \
-              --set-default
-
-  # ----------------------------------------------------------
-  # JWT AUTH for PROD
-  # ----------------------------------------------------------
-  jwt-auth-prod:
-    steps:
-      - run:
-          name: Authenticate PROD
-          command: |
-            echo "$JWT_KEY_PROD" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_PROD" > server.key
-            chmod 600 server.key
-            sf org login jwt \
-              --username "$SF_USERNAME_PROD" \
-              --client-id "$SF_CONSUMER_KEY_PROD" \
-              --jwt-key-file server.key \
-              --instance-url "$SF_INSTANCEURL_PROD" \
-              --alias target \
-              --set-default
-
-# ============================================================
-# UNIVERSAL DEPLOY LOGIC
-# ============================================================
-
-  deploy-env:
+  jwt-auth:
     parameters:
-      prefix:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Decode JWT key for << parameters.target_env >>
+          command: |
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            chmod 600 server.key
+      - run:
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
+
+  # ----------------------------------------------------------
+  # Tag-based Delta Deployment + Dependent Test Detection 🔥
+  # ----------------------------------------------------------
+  deploy-with-tags:
+    parameters:
+      tag_prefix:
         type: string
     steps:
 
+      # -------------------------------
+      # Find Most Recent Tag
+      # -------------------------------
       - run:
-          name: Load PROJECT_DIR
+          name: Find Most Recent Tag
           command: |
-            source $BASH_ENV
-            echo "📁 Using PROJECT_DIR=$PROJECT_DIR"
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-      # ---------------- TAG DISCOVERY ----------------
-      - run:
-          name: Find latest tag
-          command: |
-            source $BASH_ENV
-            cd "$PROJECT_DIR"
-
+            
             git fetch --tags
+            currentRef=0
+            currentTag=""
 
-            PREFIX="<< parameters.prefix >>"
-            latest=0
-            latestTag=""
+            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
 
-            for tag in $(git tag -l "${PREFIX}-*"); do
-              seq=$(echo "$tag" | awk -F'-' '{print $NF}')
-              if [ "$seq" -gt "$latest" ]; then
-                latest="$seq"
-                latestTag="$tag"
-              fi
-            done
-
-            echo "export PREFIX=$PREFIX" >> $BASH_ENV
-            echo "export CURRENT_TAG=$latestTag" >> $BASH_ENV
-            echo "export CURRENT_REF=$latest" >> $BASH_ENV
-
-      # ---------------- DELTA DETECTION ----------------
-      - run:
-          name: Build delta package
-          command: |
-            source $BASH_ENV
-            cd "$PROJECT_DIR"
-
-            echo "Current Tag: $CURRENT_TAG"
-
-            if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "⚠️ First deploy → FULL DEPLOY"
-              find force-app -type f > files.txt
+            if [ -n "$tags" ]; then
+              for tag in $tags; do
+                number=$(echo "$tag" | cut -d '-' -f 2)
+                if [ "$number" -gt "$currentRef" ]; then
+                  currentRef=$number
+                  currentTag=$tag
+                fi
+              done
+              echo "Latest tag: $currentTag"
             else
-              git diff --name-only "$CURRENT_TAG" HEAD | grep "force-app/" > files.txt || true
+              echo "No tags found"
+              currentRef=0
             fi
 
-            if [ ! -s files.txt ]; then
-              echo "⚠️ No changes found"
+            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
+            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
+
+      # -------------------------------
+      # Build Package from Delta
+      # -------------------------------
+      - run:
+          name: Build Package Manifest from Tag Delta
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            if [ "$CURRENT_REF" -eq 0 ]; then
+              find force-app -type f > files.txt
+            else
+              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
+              > files.txt
+              while IFS= read -r file; do
+                if [ -f "$file" ]; then echo "$file" >> files.txt; fi
+              done < temp_files.txt
+            fi
+
+            if [ -s files.txt ]; then
+              mapfile -t manifest_paths < files.txt
+              sf project generate manifest -p "${manifest_paths[@]}"
+              echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            else
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
+            fi
+
+      # -------------------------------
+      # 🔥 Dependent Test Detection Logic
+      # -------------------------------
+      - run:
+          name: Detect Dependent Apex Tests 🔍 (with debug)
+          command: |
+            set +e   # Prevent early exit
+            source $BASH_ENV
+
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            echo "======================================="
+            echo "📁 DEBUG: Listing files.txt"
+            echo "======================================="
+            cat files.txt || echo "(files.txt missing)"
+            echo ""
+            echo "======================================="
+            echo "📁 DEBUG: Show raw diff file list"
+            echo "======================================="
+            git diff --name-only --relative "$CURRENT_TAG" HEAD || true
+            echo ""
+            
+            echo "======================================="
+            echo "🔍 Detecting changed Apex classes..."
+            echo "======================================="
+
+            # Match: MyClass.cls OR MyClass.cls-meta.xml
+            CHANGED_CLASSES=$(grep -E '\.cls(-meta\.xml)?$' files.txt 2>/dev/null || true)
+            CHANGED_TRIGGERS=$(grep -E '\.trigger(-meta\.xml)?$' files.txt 2>/dev/null || true)
+
+            echo "RAW CHANGED_CLASSES = $CHANGED_CLASSES"
+            echo "RAW CHANGED_TRIGGERS = $CHANGED_TRIGGERS"
+
+            # Extract class names cleanly
+            CHANGED_CLASSES=$(echo "$CHANGED_CLASSES" | sed -E 's/.*\/([^/]+)\.cls.*/\1/' || true)
+            CHANGED_TRIGGERS=$(echo "$CHANGED_TRIGGERS" | sed -E 's/.*\/([^/]+)\.trigger.*/\1/' || true)
+
+            echo "CLEAN CHANGED_CLASSES = $CHANGED_CLASSES"
+            echo "CLEAN CHANGED_TRIGGERS = $CHANGED_TRIGGERS"
+
+            if [ -z "$CHANGED_CLASSES" ] && [ -z "$CHANGED_TRIGGERS" ]; then
+              echo "⚠️ No changed Apex classes found."
+              echo "export TEST_FLAG='--test-level NoTestRun'" >> $BASH_ENV
               exit 0
             fi
 
-            mapfile -t manifest_paths < files.txt
-            sf project generate manifest -p "${manifest_paths[@]}"
-            echo "export CHANGES_FOUND=true" >> $BASH_ENV
+            echo "======================================="
+            echo "🧪 Checking for dependent test classes..."
+            echo "======================================="
 
-      # ---------------- DEPLOY ----------------
-      - run:
-          name: Deploy metadata
-          command: |
-            source $BASH_ENV
-            cd "$PROJECT_DIR"
+            TEST_CLASSES=""
 
-            if [ "$CHANGES_FOUND" != "true" ]; then exit 0; fi
+            for C in $CHANGED_CLASSES $CHANGED_TRIGGERS; do
+              echo "➡ Checking dependent tests for: $C"
 
-            DEPLOY_OUTPUT=$(sf project deploy start --manifest package.xml --target-org target --verbose)
-            JOB_ID=$(echo "$DEPLOY_OUTPUT" | grep -o "0Af[a-zA-Z0-9]\+")
+              RESULT=$(sf data query \
+                --target-org target \
+                --query "SELECT ApexClass.Name FROM ApexCodeCoverageAggregate WHERE ApexClassOrTrigger.Name = '$C'" \
+                --json | jq -r '.result.records[].ApexClass.Name' || true)
 
-            while true; do
-              STATUS=$(sf project deploy report --job-id "$JOB_ID" --json | jq -r ".result.status")
-              echo "⏳ $STATUS"
-              if [[ "$STATUS" == "Succeeded" || "$STATUS" == "Failed" ]]; then break; fi
-              sleep 20
+              echo "Test classes referencing $C:"
+              echo "$RESULT"
+
+              if [ -n "$RESULT" ]; then
+                TEST_CLASSES="$TEST_CLASSES $RESULT"
+              fi
             done
 
-            if [ "$STATUS" == "Failed" ]; then exit 1; fi
+            TEST_CLASSES=$(echo $TEST_CLASSES | tr ' ' '\n' | sort -u | paste -sd "," -)
 
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            echo "======================================="
+            echo "🧪 FINAL DEPENDENT TEST CLASSES:"
+            echo "======================================="
+            echo "$TEST_CLASSES"
 
-      # ---------------- TAG CREATION ----------------
+            if [ -z "$TEST_CLASSES" ]; then
+              echo "⚠️ No dependent tests found. Running NoTestRun."
+              echo "export TEST_FLAG='--test-level NoTestRun'" >> $BASH_ENV
+            else
+              echo "🧪 Will run: $TEST_CLASSES"
+              echo "export TEST_FLAG='--test-level RunSpecifiedTests --tests $TEST_CLASSES'" >> $BASH_ENV
+            fi
+
+            echo "Done detecting dependent tests."
+
+      # -------------------------------
+      # Deployment with selected test mode
+      # -------------------------------
       - run:
-          name: Create new tag
+          name: Deploy Metadata (streaming output + dependent tests)
           command: |
             source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$DEPLOYMENT_SUCCESS" != "true" ]; then exit 0; fi
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "🔍 No changes, skipping deploy."
+              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+              exit 0
+            fi
 
-            NEW_REF=$((CURRENT_REF + 1))
-            NEW_TAG="${PREFIX}-${NEW_REF}"
+            echo "🚀 Starting deployment (streaming output)..."
+            echo "▶ Using test flag: $TEST_FLAG"
 
-            git tag "$NEW_TAG"
-            git push origin "$NEW_TAG"
-            echo "Created tag: $NEW_TAG"
+            # START DEPLOY (ASYNC + VERBOSE FOR STREAMING)
+            DEPLOY_OUTPUT=$(sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              $TEST_FLAG \
+              --ignore-conflicts \
+              --wait 0 \
+              --verbose)
+
+            echo "$DEPLOY_OUTPUT" > deploy-start.log
+
+            # EXTRACT JOB ID
+            JOB_ID=$(echo "$DEPLOY_OUTPUT" | grep -o "0Af[a-zA-Z0-9]\+")
+            echo "📌 Deploy Job ID: $JOB_ID"
+
+            if [ -z "$JOB_ID" ]; then
+              echo "❌ Could not detect Job ID"
+              exit 1
+            fi
+
+            echo "⏳ Polling deployment status..."
+            # LOOP UNTIL DEPLOY FINISHES
+            while true; do
+              STATUS_JSON=$(sf project deploy report --job-id "$JOB_ID" --json)
+              STATUS=$(echo "$STATUS_JSON" | jq -r '.result.status')
+
+              echo "📊 Deployment Status: $STATUS"
+
+              if [[ "$STATUS" == "Succeeded" || "$STATUS" == "Failed" ]]; then
+                echo "$STATUS_JSON" > deploy-final.json
+                break
+              fi
+
+              sleep 30
+            done
+
+            if [[ "$STATUS" == "Failed" ]]; then
+              echo "❌ Deployment failed"
+              exit 1
+            fi
+
+            echo "✅ Deployment succeeded"
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+
+            echo "📁 Fetching test results (if any)..."
+            mkdir -p /home/circleci/project/test-results
+
+            sf apex get test-results \
+              --target-org target \
+              --job-id "$JOB_ID" \
+              --result-format junit \
+              --output-dir /home/circleci/project/test-results \
+              || echo "ℹ️ No Apex tests to fetch."
 
 
-# ============================================================
-# JOB DEFINITIONS
-# ============================================================
+      # -------------------------------
+      # Tagging
+      # -------------------------------
+      - run:
+          name: Set New Tag
+          command: |
+            source $BASH_ENV
 
+            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+              NEW_REF=$((CURRENT_REF + 1))
+              NEW_TAG="$TAG_PREFIX-$NEW_REF"
+
+              git config user.email "circleci@${CIRCLE_PROJECT_REPONAME}.local"
+              git config user.name "CircleCI"
+              git tag "$NEW_TAG"
+              git push origin "$NEW_TAG"
+            fi
+
+      # Copy results
+      - run:
+          name: Move test results
+          command: |
+            mkdir -p test-results
+            find . -type d -name "test-results" ! -path "./test-results" -exec cp -r {}/* test-results/ \; || true
+
+      - store_test_results:
+          path: test-results
+
+      - store_artifacts:
+          path: test-results
+          destination: apex-test-results
+
+
+# -----------------------------------------------------------------
+# JOBS PER ENVIRONMENT
+# -----------------------------------------------------------------
 jobs:
-
   deploy-intqa:
     docker:
       - image: cimg/node:20.10
     steps:
       - checkout
-      - set-project-dir
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:rtpdJ3RdXtt0x86sIVZnUHy5VzSuhFy3hA1FtZT5Jyw"
+      - run:
+          name: Verify SSH Key Loaded
+          command: ssh -vT git@github.com || true
       - install-tooling
-      - jwt-auth-intqa
-      - deploy-env:
-          prefix: BRInt
+      - jwt-auth:
+          target_env: INTQA
+      - deploy-with-tags:
+          tag_prefix: INTQA 
 
   deploy-staging:
     docker:
       - image: cimg/node:20.10
     steps:
       - checkout
-      - set-project-dir
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:rtpdJ3RdXtt0x86sIVZnUHy5VzSuhFy3hA1FtZT5Jyw"
+      - run:
+          name: Verify SSH Key Loaded
+          command: ssh -vT git@github.com || true
       - install-tooling
-      - jwt-auth-staging
-      - deploy-env:
-          prefix: BRStaging
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy-with-tags:
+          tag_prefix: STAGING   # ✅ FIXED LINE
 
-  deploy-prod:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - set-project-dir
-      - install-tooling
-      - jwt-auth-prod
-      - deploy-env:
-          prefix: main
-
-  brint-test-pipeline:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - set-project-dir
-      - install-tooling
-      - jwt-auth-intqa
-      - deploy-env:
-          prefix: BRInt
-
-  brstaging-test-pipeline:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - set-project-dir
-      - install-tooling
-      - jwt-auth-staging
-      - deploy-env:
-          prefix: BRStaging
-
-  main-test-pipeline:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - set-project-dir
-      - install-tooling
-      - jwt-auth-prod
-      - deploy-env:
-          prefix: main
-
-
-# ============================================================
-# WORKFLOWS
-# ============================================================
-
+# -----------------------------------------------------------------
+# WORKFLOWS 
+# -----------------------------------------------------------------
 workflows:
   version: 2
-
-  deploy-intqa-pipeline:
+  build-test-deploy:
     jobs:
       - deploy-intqa:
           context: sf-intqa
@@ -291,43 +371,8 @@ workflows:
             branches:
               only: BRInt
 
-  deploy-staging-pipeline:
-    jobs:
       - deploy-staging:
           context: sf-staging
           filters:
             branches:
               only: BRStaging
-
-  deploy-prod-pipeline:
-    jobs:
-      - deploy-prod:
-          context: sf-prod
-          filters:
-            branches:
-              only: main
-
-  # TEST PIPELINES
-  test-brint-deploy:
-    jobs:
-      - brint-test-pipeline:
-          context: sf-intqa
-          filters:
-            branches:
-              only: circleCI-BRInt
-
-  test-brstaging-deploy:
-    jobs:
-      - brstaging-test-pipeline:
-          context: sf-staging
-          filters:
-            branches:
-              only: circleCI-BRStaging
-
-  test-main-deploy:
-    jobs:
-      - main-test-pipeline:
-          context: sf-prod
-          filters:
-            branches:
-              only: circleCI-mainTest
