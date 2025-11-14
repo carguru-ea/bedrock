@@ -325,4 +325,9 @@ workflows:
               only: circleCI-BRStaging
 
   test-main-deploy:
-    j
+    jobs:
+      - main-test-pipeline:
+          context: sf-prod
+          filters:
+            branches:
+              only: circleCI-mainTest
