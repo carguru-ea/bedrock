@@ -292,6 +292,8 @@ workflows:
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -299,6 +301,8 @@ workflows:
           filters:
             branches:
               only: BRStaging
+            tags:
+              ignore: /.*/
 
       - deploy-main:
           context: sf-prod
@@ -306,3 +310,5 @@ workflows:
           filters:
             branches:
               only: main
+            tags:
+              ignore: /.*/
