@@ -283,6 +283,29 @@ jobs:
           path: test-results
           destination: apex-test-results
 
+  deploy-main:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy-with-tags:
+          test_level: RunLocalTests
+          tag_prefix: << pipeline.git.branch >>
+      - run:
+          name: Move test results to root (if exist)
+          command: |
+            mkdir -p test-results
+            find . -type d -name "test-results" ! -path "./test-results" -exec cp -r {}/* test-results/ \; || true
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+          destination: apex-test-results
+
+
 # -----------------------------------------------------------------
 # WORKFLOWS – map branches to orgs
 # -----------------------------------------------------------------
@@ -290,9 +313,11 @@ workflows:
   version: 2
   build-test-deploy:
     jobs:
+
       # Integration QA branch → IntQA org
       - deploy-intqa:
           context: sf-intqa
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
@@ -300,6 +325,15 @@ workflows:
       # Staging branch → Staging/UAT org
       - deploy-staging:
           context: sf-staging
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRStaging
+
+      # Main branch → Production tag prefix
+      - deploy-main:
+          context: sf-prod
+          tag_prefix: << pipeline.git.branch >>
+          filters:
+            branches:
+              only: main
