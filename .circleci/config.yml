@@ -5,7 +5,7 @@ orbs:
 
 commands:
   # ----------------------------------------------------------
-  # Install Salesforce CLI, Java, and cache them for speeds
+  # Install Salesforce CLI, Java, and cache them for speeds 
   # ----------------------------------------------------------
   install-tooling:
     steps:
