@@ -148,12 +148,14 @@ commands:
       - run:
           name: Identify Dependent Test Classes
           command: |
+            set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             echo "🔍 Checking for Apex class changes..."
-            grep -oP '(?<=classes/).*?(?=.cls)' files.txt > changed_classes.txt || true
+            # Pull class names from any changed .cls under force-app
+            grep -oP '(?<=classes/)[^/]+(?=\.cls$)' files.txt > changed_classes.txt || true
 
             if [ ! -s changed_classes.txt ]; then
               echo "No Apex class changes detected. No dependent tests required."
@@ -164,32 +166,47 @@ commands:
             echo "Changed Apex classes:"
             cat changed_classes.txt
 
+            # Build IN (...) list: 'Class1','Class2',...
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
 
-            echo "SOQL Component List: $classList"
+            echo "SOQL Component List: ${classList}"
+            echo "Running SOQL (Tooling API) to find dependent test classes..."
 
-            echo "Running SOQL to find dependent test classes..."
+            # Query MetadataComponentDependency via TOOLING API
+            if ! sf data query \
+              --query "SELECT RefMetadataComponentName
+                       FROM MetadataComponentDependency
+                       WHERE MetadataComponentType IN ('ApexClass','ApexTrigger')
+                       AND RefMetadataComponentType = 'ApexClass'
+                       AND RefMetadataComponentName LIKE '%Test%'
+                       AND MetadataComponentName IN (${classList})" \
+              --use-tooling-api \
+              --target-org target \
+              --json > dependentTests.json; then
+              echo "⚠️ Failed to query MetadataComponentDependency (Tooling)."
+              echo "   Falling back to no dependent tests."
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              exit 0
+            fi
 
-            sf data query -q "
-              SELECT RefMetadataComponentName
-              FROM MetadataComponentDependency
-              WHERE MetadataComponentType IN ('ApexClass','ApexTrigger')
-              AND RefMetadataComponentType = 'ApexClass'
-              AND RefMetadataComponentName LIKE '%Test%'
-              AND MetadataComponentName IN (${classList})
-            " --json > dependentTests.json
+            # jq is usually available on cimg images; if not, you can apt-get install jq
+            if command -v jq >/dev/null 2>&1; then
+              TEST_CLASSES=$(jq -r '.result.records[].RefMetadataComponentName' dependentTests.json | xargs)
+            else
+              echo "⚠️ jq not found; cannot parse JSON. Falling back to no dependent tests."
+              TEST_CLASSES=""
+            fi
 
-            TEST_CLASSES=$(jq -r '.result.records[].RefMetadataComponentName' dependentTests.json)
-
-            if [ -z "$TEST_CLASSES" ]; then
+            if [ -z "${TEST_CLASSES}" ]; then
               echo "⚠️ No dependent test classes found."
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
             else
               echo "🎯 Dependent Test Classes:"
-              echo "$TEST_CLASSES"
-              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+              echo "${TEST_CLASSES}"
+              echo "export TEST_CLASSES=\"${TEST_CLASSES}\"" >> $BASH_ENV
             fi
+
 
       # ------------------------------------------------------
       # Deploy metadata (with dynamic test selection)
