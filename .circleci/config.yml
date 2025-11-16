@@ -175,12 +175,12 @@ commands:
 
             # Query MetadataComponentDependency via TOOLING API
             if ! sf data query \
-              --query "SELECT RefMetadataComponentName
+              --query "SELECT MetadataComponentName
                        FROM MetadataComponentDependency
-                       WHERE MetadataComponentType IN ('ApexClass','ApexTrigger')
-                       AND RefMetadataComponentType = 'ApexClass'
-                       AND RefMetadataComponentName LIKE '%Test%'
-                       AND MetadataComponentName IN (${classList})" \
+                       WHERE RefMetadataComponentType IN ('ApexClass','ApexTrigger')
+                       AND RefMetadataComponentName IN (${classList})
+                       AND MetadataComponentType = 'ApexClass'
+                       AND MetadataComponentName LIKE '%Test%' \
               --use-tooling-api \
               --target-org target \
               --json > dependentTests.json; then
