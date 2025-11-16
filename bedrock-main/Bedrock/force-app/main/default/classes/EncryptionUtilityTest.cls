@@ -35,6 +35,6 @@ public class EncryptionUtilityTest {
     @IsTest
     static void testEncodeUrl() {
         String result = EncryptionUtility.encodeUrl('hello world');
-        Assert.areEqual('hello%20world', result);
+        Assert.areEqual('hello+world', result);
     }
 }
