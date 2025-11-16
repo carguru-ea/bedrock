@@ -110,7 +110,7 @@ commands:
 
 
       # ------------------------------------------------------
-      # Build package.xml
+      # Build package.xml (metadata-root aware)
       # ------------------------------------------------------
       - run:
           name: Build Package Manifest
@@ -119,26 +119,65 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "🔍 Building deployable metadata file list..."
+
+            # --------------------------------------------------
+            # First deployment → full metadata scan
+            # --------------------------------------------------
             if [ "$CURRENT_REF" -eq 0 ]; then
-              find force-app -type f > files.txt || true
+              echo "🚀 First deployment — scanning entire force-app for metadata roots"
+
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
             else
+              # --------------------------------------------------
+              # Delta deployment → restrict to changed metadata
+              # --------------------------------------------------
+              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
+
               git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
 
               > files.txt
+
               while IFS= read -r file; do
-                if [ -f "$file" ]; then
-                  echo "$file" >> files.txt
-                fi
+                # Keep only metadata-root files
+                case "$file" in
+                  *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
+                      if [ -f "$file" ]; then
+                        echo "$file" >> files.txt
+                      fi
+                      ;;
+                esac
               done < temp_files.txt
             fi
 
+            echo "👉 Final metadata root list:"
+            cat files.txt || echo "(none)"
+
+            # --------------------------------------------------
+            # Generate manifest
+            # --------------------------------------------------
             if [ -s files.txt ]; then
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
+
+              echo "📦 Generated package.xml:"
+              cat package.xml
             else
+              echo "⚠️ No deployable metadata roots found."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
+
 
 
       # ------------------------------------------------------
