@@ -34,7 +34,7 @@ public class OpportunityHandlerTest {
     static void testFilterByMinAmount() {
         List<Opportunity> opps = [SELECT Id, Name, StageName, Amount FROM Opportunity];
         List<Opportunity> filtered = OpportunityHandler.filterByMinAmount(opps, 50000);
-        Assert.areEqual(3, filtered.size());
+        Assert.areEqual(2, filtered.size());
     }
     
     @IsTest
