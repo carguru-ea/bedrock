@@ -7,8 +7,8 @@ public class DateUtilityTest {
     @IsTest
     static void testDaysBetween() {
         Date start = Date.newInstance(2025, 1, 1);
-        Date end = Date.newInstance(2025, 1, 11);
-        Integer days = DateUtility.daysBetween(start, end);
+        Date endDate = Date.newInstance(2025, 1, 11);
+        Integer days = DateUtility.daysBetween(start, endDate);
         Assert.areEqual(10, days);
     }
     

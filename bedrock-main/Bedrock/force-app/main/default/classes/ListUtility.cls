@@ -28,6 +28,10 @@ public class ListUtility {
     public static List<String> paginate(List<String> items, Integer pageSize, Integer pageNumber) {
         Integer startIndex = (pageNumber - 1) * pageSize;
         Integer endIndex = Math.min(startIndex + pageSize, items.size());
-        return items.subList(startIndex, endIndex);
+        List<String> result = new List<String>();
+        for (Integer i = startIndex; i < endIndex; i++) {
+            result.add(items[i]);
+        }
+        return result;
     }
 }

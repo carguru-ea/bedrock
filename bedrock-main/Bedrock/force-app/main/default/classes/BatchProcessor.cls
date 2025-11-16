@@ -7,7 +7,11 @@ public class BatchProcessor {
         List<List<Object>> batches = new List<List<Object>>();
         for (Integer i = 0; i < items.size(); i += batchSize) {
             Integer endIndex = Math.min(i + batchSize, items.size());
-            batches.add(new List<Object>(items.subList(i, endIndex)));
+            List<Object> batch = new List<Object>();
+            for (Integer j = i; j < endIndex; j++) {
+                batch.add(items[j]);
+            }
+            batches.add(batch);
         }
         return batches;
     }
