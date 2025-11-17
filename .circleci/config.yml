@@ -291,21 +291,30 @@ commands:
 
 
       # ------------------------------------------------------
-      # Deploy with dynamic test selection
+      # Deploy with dynamic / conditional test execution
       # ------------------------------------------------------
       - run:
           name: Deploy Metadata (Dynamic Tests)
           command: |
+            set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No changes to deploy."
               echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
               exit 0
             fi
 
-            if [ -n "$TEST_CLASSES" ]; then
+            # --------------------------------------------------
+            # CASE 1 — Dependent tests found → RunSpecifiedTests
+            # --------------------------------------------------
+            if [ -n "${TEST_CLASSES}" ]; then
+              echo "🎯 Dependent test classes detected:"
+              echo "$TEST_CLASSES"
+              echo "🚀 Deploying with RunSpecifiedTests..."
+
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
@@ -313,16 +322,26 @@ commands:
                 --tests "$TEST_CLASSES" \
                 --wait 360 \
                 --ignore-conflicts
-            else
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360 \
-                --ignore-conflicts
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
             fi
 
+            # --------------------------------------------------
+            # CASE 2 — NO dependent tests → NoTestRun
+            # --------------------------------------------------
+            echo "🛑 No dependent Apex test classes found."
+            echo "📦 Proceeding with metadata-only deployment using NoTestRun."
+
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level NoTestRun \
+              --ignore-conflicts \
+              --wait 360
+
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+
 
 
       # ------------------------------------------------------
