@@ -68,9 +68,6 @@ commands:
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
-      test_level:
-        type: string
-        default: RunLocalTests
       tag_prefix:
         type: string
     steps:
@@ -203,7 +200,18 @@ commands:
             echo "📌 Changed Apex classes:"
             cat changed_classes.txt
 
-            # Build name list for SOQL
+            # If any of the changed classes are test classes themselves (ending with Test or Tests),
+            # run those tests directly — no dependency lookup necessary.
+            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
+            if [ -s changed_test_classes.txt ]; then
+              echo "🔎 Changed classes include test classes — will run these tests directly:"
+              cat changed_test_classes.txt
+              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
+              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            # Build name list for SOQL (non-test changed classes)
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
             echo "📝 SOQL class name list: ${classList}"
@@ -291,7 +299,7 @@ commands:
 
 
       # ------------------------------------------------------
-      # Deploy with dynamic / conditional test execution
+      # Deploy with dynamic / conditional test execution 
       # ------------------------------------------------------
       - run:
           name: Deploy Metadata (Dynamic Tests)
@@ -302,10 +310,39 @@ commands:
             cd "$PROJECT_DIR"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No changes to deploy."
-              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
-              exit 0
+              echo "⚠️ No delta changes detected — performing full scan and deploying all components with full tests."
+
+              # Build full manifest across the metadata root
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
+              if [ -s files.txt ]; then
+                mapfile -t manifest_paths < files.txt
+                sf project generate manifest -p "${manifest_paths[@]}"
+                # Persist for later steps and for subsequent commands in this shell
+                echo "export CHANGES_FOUND=true" >> $BASH_ENV
+                echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
+                # Also export into the current shell so the rest of this run uses it immediately
+                export CHANGES_FOUND=true
+                export TEST_LEVEL=RunLocalTests
+                echo "📦 Generated full package.xml for full deploy:" 
+                cat package.xml || true
+              else
+                echo "⚠️ No metadata files found during full scan. Nothing to deploy."
+                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                exit 0
+              fi
             fi
+
+            mkdir -p test-results
 
             # --------------------------------------------------
             # CASE 1 — Dependent tests found → RunSpecifiedTests
@@ -313,9 +350,8 @@ commands:
             if [ -n "${TEST_CLASSES}" ]; then
               echo "🎯 Dependent test classes detected:"
               echo "$TEST_CLASSES"
-              echo "🚀 Deploying with RunSpecifiedTests (new SF CLI format)..."
+              echo "🚀 Deploying with RunSpecifiedTests..."
 
-              # Convert: "A B C" → "--tests A --tests B --tests C"
               TEST_ARGS=""
               for t in $TEST_CLASSES; do
                 TEST_ARGS="$TEST_ARGS --tests $t"
@@ -329,28 +365,40 @@ commands:
                 --test-level RunSpecifiedTests \
                 $TEST_ARGS \
                 --wait 360 \
-                --ignore-conflicts
+                --ignore-conflicts 
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
             fi
 
             # --------------------------------------------------
-            # CASE 2 — NO dependent tests → NoTestRun
+            # CASE 2 — NO dependent tests → either run all local tests or NoTestRun
             # --------------------------------------------------
             echo "🛑 No dependent Apex test classes found."
-            echo "📦 Proceeding with metadata-only deployment using NoTestRun."
+            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
+              echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
+
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --ignore-conflicts \
+                --wait 360 
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
+            fi
+
+            echo "📦 Proceeding with NoTestRun."
 
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
               --ignore-conflicts \
-              --wait 360
+              --wait 360 
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-
-
 
 
       # ------------------------------------------------------
