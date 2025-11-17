@@ -9,8 +9,8 @@ orbs:
 commands:
 
   # ----------------------------------------------------------
-  # Install Salesforce CLI + Java  
-  # ------------------------------------------- ---------------
+  # Install Salesforce CLI + Java
+  # ----------------------------------------------------------
   install-tooling:
     steps:
       - restore_cache:
@@ -25,10 +25,8 @@ commands:
             fi
 
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-            
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
-
             sf --version
 
       - save_cache:
@@ -47,13 +45,13 @@ commands:
         type: string
     steps:
       - run:
-          name: Decode JWT key for << parameters.target_env >>
+          name: Decode JWT Key
           command: |
             echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
-          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          name: Authenticate to Salesforce
           command: |
             sf org login jwt \
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
@@ -64,7 +62,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
+  # Full Deployment Logic (Delta, Manifest, Tests, Async Deploy)
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -73,32 +71,30 @@ commands:
     steps:
 
       # ------------------------------------------------------
-      # Identify most recent tag
+      # Identify Latest Tag
       # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             git fetch --tags
 
             currentRef=0
             currentTag=""
-
             tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
 
             if [ -n "$tags" ]; then
               for tag in $tags; do
-                refNum=$(echo $tag | cut -d '-' -f 2)
-                if [ "$refNum" -gt "$currentRef" ]; then
-                  currentRef=$refNum
+                num=$(echo $tag | cut -d '-' -f 2)
+                if [ "$num" -gt "$currentRef" ]; then
+                  currentRef=$num
                   currentTag=$tag
                 fi
               done
               echo "Latest tag: $currentTag"
             else
-              echo "No tags found for prefix << parameters.tag_prefix >>"
+              echo "No tags found"
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
@@ -107,7 +103,7 @@ commands:
 
 
       # ------------------------------------------------------
-      # Build package.xml (metadata-root aware)
+      # Build package.xml
       # ------------------------------------------------------
       - run:
           name: Build Package Manifest
@@ -116,69 +112,35 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "🔍 Building deployable metadata file list..."
-
-            # --------------------------------------------------
-            # First deployment → full metadata scan
-            # --------------------------------------------------
-            if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "🚀 First deployment — scanning entire force-app for metadata roots"
-
+            if [ "$CURRENT_REF" = "0" ]; then
+              echo "Full scan"
               find force-app/main/default -type f \
-                \( -name "*.cls" \
-                -o -name "*.trigger" \
-                -o -name "*.page" \
-                -o -name "*.component" \
-                -o -name "*.cmp" \
-                -o -name "*.app" \
-                -o -name "*-meta.xml" \
-                -o -name "*.js-meta.xml" \
-                \) > files.txt || true
-
+                \( -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
+                -o -name "*.cmp" -o -name "*.component" -o -name "*.app" \
+                -o -name "*.js-meta.xml" -o -name "*-meta.xml" \) > files.txt
             else
-              # --------------------------------------------------
-              # Delta deployment → restrict to changed metadata
-              # --------------------------------------------------
-              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
-
+              echo "Delta scan"
               git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
-
               > files.txt
-
-              while IFS= read -r file; do
-                # Keep only metadata-root files
+              while read file; do
                 case "$file" in
-                  *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
-                      if [ -f "$file" ]; then
-                        echo "$file" >> files.txt
-                      fi
-                      ;;
+                  *.cls|*.trigger|*.js-meta.xml|*.page|*.component|*.cmp|*.app|*-meta.xml)
+                    [ -f "$file" ] && echo "$file" >> files.txt
                 esac
               done < temp_files.txt
             fi
 
-            echo "👉 Final metadata root list:"
-            cat files.txt || echo "(none)"
-
-            # --------------------------------------------------
-            # Generate manifest
-            # --------------------------------------------------
             if [ -s files.txt ]; then
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
-
-              echo "📦 Generated package.xml:"
-              cat package.xml
             else
-              echo "⚠️ No deployable metadata roots found."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
 
-
       # ------------------------------------------------------
-      # Identify dependent test classes (ID-based + full debug)
+      # Identify Dependent Test Classes
       # ------------------------------------------------------
       - run:
           name: Identify Dependent Test Classes
@@ -188,210 +150,56 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "🔍 Extracting changed Apex class names from metadata roots..."
             grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
 
             if [ ! -s changed_classes.txt ]; then
-              echo "⚠️ No Apex classes changed."
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              echo "export TEST_CLASSES=''" >> $BASH_ENV
               exit 0
             fi
 
-            echo "📌 Changed Apex classes:"
-            cat changed_classes.txt
-
-            # If any of the changed classes are test classes themselves (ending with Test or Tests),
-            # run those tests directly — no dependency lookup necessary.
-            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
-            if [ -s changed_test_classes.txt ]; then
-              echo "🔎 Changed classes include test classes — will run these tests directly:"
-              cat changed_test_classes.txt
-              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
-              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            # Build name list for SOQL (non-test changed classes)
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
-            echo "📝 SOQL class name list: ${classList}"
 
-            # ---------------------------------------------------
-            # Step 1 — Get ApexClass IDs for changed classes
-            # ---------------------------------------------------
-            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
+            sf data query --query "SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})" \
+              --use-tooling-api --target-org target --json > classIds.json
 
-            echo "🔎 Running SOQL to fetch ApexClass IDs:"
-            echo "$soqlClasses"
-
-            sf data query \
-              --query "$soqlClasses" \
-              --use-tooling-api \
-              --target-org target \
-              --json > classIds.json
-
-            echo "📥 Raw response (ApexClass IDs):"
-            cat classIds.json
-
-            # Parse IDs for dependency query
-            if command -v jq >/dev/null 2>&1; then
-              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
-            else
-              echo "⚠️ jq not found. Cannot parse ApexClass IDs."
-              CLASS_IDS=""
-            fi
+            CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs || true)
 
             if [ -z "$CLASS_IDS" ]; then
-              echo "⚠️ No ApexClass IDs found. Skipping dependent test discovery."
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              echo "export TEST_CLASSES=''" >> $BASH_ENV
               exit 0
             fi
 
-            echo "🔗 ApexClass IDs to inspect:"
-            echo "$CLASS_IDS"
-
-            # Convert space-separated → SOQL IN ('id','id')
-            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
-            classIdList="'${classIdList}'"
-
-            # ---------------------------------------------------
-            # Step 2 — Query MetadataComponentDependency
-            # ---------------------------------------------------
-            soqlDep="SELECT MetadataComponentName
-                     FROM MetadataComponentDependency
-                     WHERE RefMetadataComponentType = 'ApexClass'
-                     AND RefMetadataComponentId IN (${classIdList})
-                     AND MetadataComponentType = 'ApexClass'"
-
-            echo "🔎 Running SOQL to fetch dependent test classes:"
-            echo "$soqlDep"
+            idList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
+            idList="'${idList}'"
 
             sf data query \
-              --query "$soqlDep" \
-              --use-tooling-api \
-              --target-org target \
-              --json > dependentTests.json || {
-                echo '⚠️ Dependency SOQL failed — falling back to no tests.'
-                echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-                exit 0
-              }
+              --query "SELECT MetadataComponentName FROM MetadataComponentDependency WHERE RefMetadataComponentId IN (${idList}) AND MetadataComponentType='ApexClass'" \
+              --use-tooling-api --target-org target --json > dependentTests.json
 
-            echo "📥 Raw dependency response:"
-            cat dependentTests.json
-
-            # Extract names
-            if command -v jq >/dev/null 2>&1; then
-              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
-            else
-              echo "⚠️ jq missing — cannot parse dependency results"
-              TEST_CLASSES=""
-            fi
-
-            if [ -z "$TEST_CLASSES" ]; then
-              echo "⚠️ No dependent test classes found."
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-            else
-              echo "🎯 Dependent Test Classes:"
-              echo "$TEST_CLASSES"
-              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-            fi
-
+            TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs || true)
+            echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
 
 
       # ------------------------------------------------------
-      # Deploy with dynamic / conditional test execution (Async + Cancel Trap)
+      # Start Async Deployment ONLY
       # ------------------------------------------------------
       - run:
-          name: Deploy Metadata (Dynamic Tests + Async + Cancel Trap)
+          name: Start Async Deployment
           command: |
-            set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            # --------------------------------------------------
-            # Trap cancellation FIRST (to ensure it catches signal ) 
-            # --------------------------------------------------
-            DEPLOY_ID=""
-
-            cleanup() {
-              echo "🧹 Caught CircleCI cancellation signal — cancelling Salesforce deployment…"
-
-              if [ -n "$DEPLOY_ID" ]; then
-                SHORT_ID=${DEPLOY_ID:0:15}
-                echo "⛔ Canceling job $SHORT_ID in background…"
-
-                (
-                  sf project deploy cancel --job-id "$SHORT_ID" --target-org target;
-                ) &
-
-                # Give background process time to send HTTP request
-                sleep 4
-              else
-                echo "⚠️ No deploy ID found — nothing to cancel."
-              fi
-            }
-
-
-            trap cleanup TERM INT
-
-
-            # --------------------------------------------------
-            # FULL DEPLOY (no delta detected earlier)
-            # --------------------------------------------------
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta detected → running full deploy with full tests."
-
-              find force-app/main/default -type f \
-                \( -name "*.cls" \
-                -o -name "*.trigger" \
-                -o -name "*.page" \
-                -o -name "*.component" \
-                -o -name "*.cmp" \
-                -o -name "*.app" \
-                -o -name "*-meta.xml" \
-                -o -name "*.js-meta.xml" \) > files.txt || true
-
-              if [ -s files.txt ]; then
-                mapfile -t manifest_paths < files.txt
-                sf project generate manifest -p "${manifest_paths[@]}"
-                export CHANGES_FOUND=true
-                export TEST_LEVEL="RunLocalTests"
-                echo "📦 Generated full manifest:"
-                cat package.xml
-              else
-                echo "⚠️ No metadata files found. Exiting."
-                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
-                exit 0
-              fi
-            fi
-
-
-            # --------------------------------------------------
-            # Resolve test level + test args
-            # --------------------------------------------------
             TEST_ARGS=""
             DEPLOY_TEST_LEVEL="NoTestRun"
 
-            if [ -n "${TEST_CLASSES:-}" ]; then
-              echo "🎯 Dependent test classes:"
-              echo "$TEST_CLASSES"
+            if [ -n "$TEST_CLASSES" ]; then
               DEPLOY_TEST_LEVEL="RunSpecifiedTests"
-              for t in $TEST_CLASSES; do
-                TEST_ARGS="$TEST_ARGS --tests $t"
-              done
-            elif [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
+              for T in $TEST_CLASSES; do TEST_ARGS="$TEST_ARGS --tests $T"; done
+            elif [ "$CHANGES_FOUND" = "true" ]; then
               DEPLOY_TEST_LEVEL="RunLocalTests"
             fi
-
-            echo "➡️ Final Test Level: $DEPLOY_TEST_LEVEL"
-            echo "➡️ Final Test Args: $TEST_ARGS"
-
-
-            # --------------------------------------------------
-            # START ASYNC DEPLOY (non-blocking)  
-            # --------------------------------------------------
-            echo "🚀 Starting async Salesforce deploy…"
 
             DEPLOY_ID=$(
               sf project deploy start \
@@ -403,55 +211,35 @@ commands:
                 --json | jq -r '.result.id'
             )
 
-            echo "📌 Deploy started. ID: $DEPLOY_ID"
+            echo "$DEPLOY_ID" > deploy-info/deploy_id.txt
+            echo "$CURRENT_REF" > deploy-info/current_ref.txt
 
-
-            # --------------------------------------------------
-            # RESUME DEPLOY IN BACKGROUND (critical for trap) 
-            # --------------------------------------------------
-            echo "⏳ Waiting for deploy to finish (resume mode)…"
-
-            sf project deploy resume \
-              --job-id "$DEPLOY_ID" \
-              --json &
-            RESUME_PID=$!
-
-            # Backgrounding = allows bash to receive SIGTERM
-            wait $RESUME_PID
-
-            # If resume finished normally, deployment succeeded
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-
-
-      # ------------------------------------------------------
-      # Tag creation
-      # ------------------------------------------------------
-      - run:
-          name: Create & Push Tag
-          command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
-              NEW_REF=$((CURRENT_REF + 1))
-              NEW_TAG="$TAG_PREFIX-$NEW_REF"
-
-              git config user.email "circleci@example.com"
-              git config user.name "CircleCI"
-              git tag "$NEW_TAG"
-              git push origin "$NEW_TAG"
-            fi
+      # Save deploy info
+      - persist_to_workspace:
+          root: deploy-info
+          paths:
+            - deploy_id.txt
+            - current_ref.txt
+            - files.txt
+            - changed_classes.txt
+            - dependentTests.json
+            - classIds.json
 
 
 
 # ============================================================
-# JOBS PER ORG
+# JOBS
 # ============================================================
+
 jobs:
 
-  deploy-intqa:
+  # ------------------------------------------------------------
+  # DEPLOY START JOB
+  # ------------------------------------------------------------
+  deploy-start:
     parameters:
+      target_env:
+        type: string
       tag_prefix:
         type: string
     docker:
@@ -460,72 +248,111 @@ jobs:
       - checkout
       - install-tooling
       - jwt-auth:
-          target_env: INTQA
+          target_env: << parameters.target_env >>
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
 
-  deploy-main:
+  # ------------------------------------------------------------
+  # DEPLOY MONITOR JOB
+  # ------------------------------------------------------------
+  deploy-monitor:
     parameters:
+      target_env:
+        type: string
       tag_prefix:
         type: string
     docker:
       - image: cimg/node:20.10
     steps:
       - checkout
+      - attach_workspace:
+          at: deploy-info
       - install-tooling
       - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
+          target_env: << parameters.target_env >>
+      - run:
+          name: Resume Deployment Until Completion
+          command: |
+            DEPLOY_ID=$(cat deploy-info/deploy_id.txt)
+            sf project deploy resume --job-id "$DEPLOY_ID" --wait 360 --json
+
+      - run:
+          name: Create Success Tag
+          command: |
+            CURR_REF=$(cat deploy-info/current_ref.txt)
+            NEW_REF=$((CURR_REF + 1))
+            NEW_TAG="<< parameters.tag_prefix >>-$NEW_REF"
+
+            git config user.email "circleci@example.com"
+            git config user.name "CircleCI"
+
+            git tag "$NEW_TAG"
+            git push origin "$NEW_TAG"
+
+
+  # ------------------------------------------------------------
+  # DEPLOY CANCEL JOB
+  # ------------------------------------------------------------
+  deploy-cancel:
+    parameters:
+      target_env:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - attach_workspace:
+          at: deploy-info
+      - install-tooling
+      - jwt-auth:
+          target_env: << parameters.target_env >>
+      - run:
+          name: Cancel Salesforce Deployment
+          command: |
+            if [ ! -f deploy-info/deploy_id.txt ]; then
+              echo "No deploy ID found; nothing to cancel."
+              exit 0
+            fi
+
+            DEPLOY_ID=$(cat deploy-info/deploy_id.txt)
+            SHORT_ID=${DEPLOY_ID:0:15}
+
+            sf project deploy cancel --job-id "$SHORT_ID" --target-org target || true
+            echo "Cancel command sent."
 
 
 
 # ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT)
+# WORKFLOW
 # ============================================================
 workflows:
   version: 2
 
-  build-test-deploy:
+  deploy-intqa-pipeline:
     jobs:
 
-      - deploy-intqa:
+      - deploy-start:
+          name: deploy-start-intqa
           context: sf-intqa
+          target_env: INTQA
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
 
-      - deploy-staging:
-          context: sf-staging
+      - deploy-monitor:
+          name: deploy-monitor-intqa
+          context: sf-intqa
+          target_env: INTQA
           tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: BRStaging
-            tags:
-              ignore: /.*/
+          requires:
+            - deploy-start-intqa
 
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: main
-            tags:
-              ignore: /.*/
+      - deploy-cancel:
+          name: deploy-cancel-intqa
+          context: sf-intqa
+          target_env: INTQA
+          requires:
+            - deploy-start-intqa
+          type: approval
