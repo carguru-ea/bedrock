@@ -1,5 +1,5 @@
 /**
- * @description Batch processor utility
+ * @description Batch processor utilitys
  */
 public class BatchProcessor {
     
