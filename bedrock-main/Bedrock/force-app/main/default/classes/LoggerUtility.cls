@@ -1,5 +1,5 @@
 /**
- * @description Logger utility for debugging and error handling
+ * @description Logger utility for debugging and error handlingss
  */
 public class LoggerUtility {
     
