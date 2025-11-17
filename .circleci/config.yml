@@ -313,13 +313,21 @@ commands:
             if [ -n "${TEST_CLASSES}" ]; then
               echo "🎯 Dependent test classes detected:"
               echo "$TEST_CLASSES"
-              echo "🚀 Deploying with RunSpecifiedTests..."
+              echo "🚀 Deploying with RunSpecifiedTests (new SF CLI format)..."
+
+              # Convert: "A B C" → "--tests A --tests B --tests C"
+              TEST_ARGS=""
+              for t in $TEST_CLASSES; do
+                TEST_ARGS="$TEST_ARGS --tests $t"
+              done
+
+              echo "🔥 Final TEST_ARGS: $TEST_ARGS"
 
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunSpecifiedTests \
-                --tests "$(echo $TEST_CLASSES | tr ' ' ',')" \
+                $TEST_ARGS \
                 --wait 360 \
                 --ignore-conflicts
 
@@ -341,6 +349,7 @@ commands:
               --wait 360
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+
 
 
 
