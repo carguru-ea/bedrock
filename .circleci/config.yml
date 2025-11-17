@@ -310,7 +310,7 @@ commands:
             cd "$PROJECT_DIR"
 
             # --------------------------------------------------
-            # Trap cancellation FIRST (to ensure it catches signal )
+            # Trap cancellation FIRST (to ensure it catches signal ) 
             # --------------------------------------------------
             DEPLOY_ID=""
 
