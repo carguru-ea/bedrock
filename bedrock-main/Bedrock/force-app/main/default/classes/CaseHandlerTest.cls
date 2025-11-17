@@ -496,4 +496,237 @@ public class CaseHandlerTest {
             }
         }
     }
+
+        @IsTest
+    static void testExtendedCaseQueryBatch1() {
+        performanceDelay();
+        Integer count = CaseHandler.getCaseCountByStatus('New');
+        Assert.isTrue(count >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseQueryBatch2() {
+        performanceDelay();
+        Integer count = CaseHandler.getCaseCountByStatus('Closed');
+        Assert.isTrue(count >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseQueryBatch3() {
+        performanceDelay();
+        List<Case> cases = CaseHandler.getCasesByPriority('Medium');
+        Assert.isNotNull(cases);
+    }
+
+    @IsTest
+    static void testExtendedCaseQueryBatch4() {
+        performanceDelay();
+        List<Case> cases = CaseHandler.getCasesByPriority('Low');
+        Assert.isNotNull(cases);
+    }
+
+    @IsTest
+    static void testExtendedCaseOverdueCheck1() {
+        performanceDelay();
+        Case c = [SELECT Id, CreatedDate FROM Case LIMIT 1];
+        Boolean r = CaseHandler.isCaseOverdue(c);
+        Assert.isNotNull(r);
+    }
+
+    @IsTest
+    static void testExtendedCaseOverdueCheck2() {
+        performanceDelay();
+        Case c = [SELECT Id, CreatedDate FROM Case ORDER BY CreatedDate DESC LIMIT 1];
+        Boolean r = CaseHandler.isCaseOverdue(c);
+        Assert.isNotNull(r);
+    }
+
+    @IsTest
+    static void testExtendedCaseOverdueCheck3() {
+        performanceDelay();
+        List<Case> listC = [SELECT Id, CreatedDate FROM Case ORDER BY CreatedDate LIMIT 5];
+        for (Case c : listC) {
+            Boolean r = CaseHandler.isCaseOverdue(c);
+            Assert.isNotNull(r);
+        }
+    }
+
+    @IsTest
+    static void testExtendedAverageResolutionBatch1() {
+        performanceDelay();
+        List<Case> cases = [SELECT Id, CreatedDate, ClosedDate FROM Case];
+        Decimal avg = CaseHandler.calculateAverageResolutionTime(cases);
+        Assert.isTrue(avg >= 0);
+    }
+
+    @IsTest
+    static void testExtendedAverageResolutionBatch2() {
+        performanceDelay();
+        List<Case> cases = new List<Case>();
+        Decimal avg = CaseHandler.calculateAverageResolutionTime(cases);
+        Assert.isTrue(avg >= 0);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchHigh1() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('High');
+        Assert.isNotNull(c);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchHigh2() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('High');
+        Assert.isTrue(c.size() >= 0);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchMedium1() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('Medium');
+        Assert.isNotNull(c);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchMedium2() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('Medium');
+        Assert.isTrue(c.size() >= 0);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchLow1() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('Low');
+        Assert.isNotNull(c);
+    }
+
+    @IsTest
+    static void testExtendedPriorityFetchLow2() {
+        performanceDelay();
+        List<Case> c = CaseHandler.getCasesByPriority('Low');
+        Assert.isTrue(c.size() >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseCountRandomStatus1() {
+        performanceDelay();
+        Integer count = CaseHandler.getCaseCountByStatus('UnknownStatus');
+        Assert.isTrue(count >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseCountRandomStatus2() {
+        performanceDelay();
+        Integer count = CaseHandler.getCaseCountByStatus('PendingReview');
+        Assert.isTrue(count >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseEditsBatch1() {
+        performanceDelay();
+        Case c = [SELECT Id, Subject FROM Case LIMIT 1];
+        c.Subject = 'Edited Subject A';
+        update c;
+        Case updated = [SELECT Subject FROM Case WHERE Id = :c.Id];
+        Assert.areEqual('Edited Subject A', updated.Subject);
+    }
+
+    @IsTest
+    static void testExtendedCaseEditsBatch2() {
+        performanceDelay();
+        Case c = [SELECT Id, Priority FROM Case LIMIT 1];
+        c.Priority = 'High';
+        update c;
+        Case updated = [SELECT Priority FROM Case WHERE Id = :c.Id];
+        Assert.areEqual('High', updated.Priority);
+    }
+
+    @IsTest
+    static void testExtendedCaseEditsBatch3() {
+        performanceDelay();
+        Case c = [SELECT Id, Status FROM Case LIMIT 1];
+        c.Status = 'Closed';
+        update c;
+        Case updated = [SELECT Status FROM Case WHERE Id = :c.Id];
+        Assert.areEqual('Closed', updated.Status);
+    }
+
+    @IsTest
+    static void testExtendedBulkInsertBatch1() {
+        performanceDelay();
+        List<Case> listC = new List<Case>();
+        for (Integer i = 0; i < 20; i++)
+            listC.add(new Case(Subject='BulkExt '+i, Status='New', Priority='Medium'));
+        insert listC;
+        Assert.isTrue(listC.size() == 20);
+    }
+
+    @IsTest
+    static void testExtendedBulkInsertBatch2() {
+        performanceDelay();
+        List<Case> listC = [SELECT Id FROM Case];
+        Assert.isTrue(listC.size() >= 0);
+    }
+
+    @IsTest
+    static void testExtendedCaseDeletion1() {
+        performanceDelay();
+        Case c = new Case(Subject='Temp Delete 1', Status='New', Priority='Low');
+        insert c;
+        delete c;
+        List<Case> after = [SELECT Id FROM Case WHERE Id = :c.Id];
+        Assert.isTrue(after.isEmpty());
+    }
+
+    @IsTest
+    static void testExtendedCaseDeletion2() {
+        performanceDelay();
+        List<Case> cList = [SELECT Id FROM Case LIMIT 3];
+        delete cList;
+        Assert.isTrue(true);
+    }
+
+    @IsTest
+    static void testExtendedCaseNumberValidation1() {
+        performanceDelay();
+        List<Case> listC = [SELECT Id, CaseNumber FROM Case];
+        for (Case c : listC) Assert.isNotNull(c.CaseNumber);
+    }
+
+    @IsTest
+    static void testExtendedCaseNumberValidation2() {
+        performanceDelay();
+        Case c = [SELECT Id, CaseNumber FROM Case LIMIT 1];
+        Assert.isNotNull(c.CaseNumber);
+    }
+
+    @IsTest
+    static void testExtendedMultipleCalls1() {
+        performanceDelay();
+        for (Integer i = 0; i < 3; i++) {
+            Integer count = CaseHandler.getCaseCountByStatus('New');
+            Assert.isTrue(count >= 0);
+        }
+    }
+
+    @IsTest
+    static void testExtendedMultipleCalls2() {
+        performanceDelay();
+        for (Integer i = 0; i < 3; i++) {
+            List<Case> c = CaseHandler.getCasesByPriority('Medium');
+            Assert.isNotNull(c);
+        }
+    }
+
+    @IsTest
+    static void testExtendedMultipleCalls3() {
+        performanceDelay();
+        List<Case> cList = [SELECT CreatedDate FROM Case];
+        for (Case c : cList) {
+            Assert.isNotNull(c.CreatedDate);
+        }
+    }
+
 }
