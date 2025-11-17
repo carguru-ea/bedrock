@@ -473,7 +473,7 @@ public class CaseHandlerTest {
     @IsTest
     static void testPerformanceStress3() {
         performanceDelay();
-        List<Case> cases = [SELECT Id FROM Case];
+        List<Case> cases = [SELECT Id,CreatedDate FROM Case];
         for (Case c : cases) {
             Boolean result = CaseHandler.isCaseOverdue(c);
             Assert.isNotNull(result);
