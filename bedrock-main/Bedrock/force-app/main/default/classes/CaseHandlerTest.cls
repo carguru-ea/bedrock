@@ -489,7 +489,9 @@ public class CaseHandlerTest {
         Integer sum = 0;
         for (Integer i = 0; i < 500000; i++) {
             sum += i * 2;
-            if (i % 100000 == 0) {
+            // Avoid using '%' to prevent parser issues in some Apex environments;
+            // use integer division check to determine multiples of 100000 instead.
+            if ((i / 100000) * 100000 == i) {
                 sum = sum / (i + 1);
             }
         }
