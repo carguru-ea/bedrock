@@ -1,5 +1,5 @@
 /**
- * @description Test class for DateUtilitys
+ * @description Test class for DateUtilityss
  */
 @IsTest
 public class DateUtilityTest {
