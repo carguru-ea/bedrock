@@ -200,7 +200,18 @@ commands:
             echo "📌 Changed Apex classes:"
             cat changed_classes.txt
 
-            # Build name list for SOQL
+            # If any of the changed classes are test classes themselves (ending with Test or Tests),
+            # run those tests directly — no dependency lookup necessary.
+            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
+            if [ -s changed_test_classes.txt ]; then
+              echo "🔎 Changed classes include test classes — will run these tests directly:"
+              cat changed_test_classes.txt
+              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
+              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            # Build name list for SOQL (non-test changed classes)
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
             echo "📝 SOQL class name list: ${classList}"
