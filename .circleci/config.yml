@@ -322,6 +322,7 @@ commands:
               done
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
+              mkdir -p test-results
 
               sf project deploy start \
                 --manifest package.xml \
@@ -329,7 +330,9 @@ commands:
                 --test-level RunSpecifiedTests \
                 $TEST_ARGS \
                 --wait 360 \
-                --ignore-conflicts
+                --ignore-conflicts \
+                --test-result-format junit \
+                --results-dir test-results
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -347,8 +350,18 @@ commands:
               --test-level NoTestRun \
               --ignore-conflicts \
               --wait 360
+              --test-result-format junit \
+              --results-dir test-results
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+ 
+   
+        - store_test_results:
+            path: test-results
+  
+        - store_artifacts:
+            path: test-results
+            destination: apex-tests
 
 
 
