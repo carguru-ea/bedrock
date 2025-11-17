@@ -359,13 +359,58 @@ commands:
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
 
+              # Start deploy and capture job id so we can cancel it if this job is terminated
+              DEPLOY_OUT_FILE=$(mktemp)
+
+              cleanup() {
+                echo "Received termination signal — attempting to cancel Salesforce deployment..."
+                if [ -n "${DEPLOY_JOB_ID:-}" ]; then
+                  echo "Canceling deploy job ${DEPLOY_JOB_ID}"
+                  # Try new 'sf' cancel command, fall back to older sfdx mdapi cancel command if available
+                  sf project deploy cancel --job-id "${DEPLOY_JOB_ID}" --target-org target || \
+                  sf project deploy cancel --id "${DEPLOY_JOB_ID}" --target-org target || \
+                  sf force:mdapi:deploy:cancel -i "${DEPLOY_JOB_ID}" -u target || \
+                  echo "Failed to run a cancel command — it may not be supported in this CLI version"
+                else
+                  echo "No deploy job id captured; nothing to cancel."
+                fi
+                exit 1
+              }
+
+              trap 'cleanup' TERM INT
+
+              # Launch the deploy in background and capture output
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunSpecifiedTests \
                 $TEST_ARGS \
                 --wait 360 \
-                --ignore-conflicts 
+                --ignore-conflicts \
+                --json > "$DEPLOY_OUT_FILE" 2>&1 &
+
+              SF_DEPLOY_PID=$!
+
+              # Poll deploy output file for a deploy job id (best-effort)
+              for i in $(seq 1 60); do
+                if command -v jq >/dev/null 2>&1 && [ -s "$DEPLOY_OUT_FILE" ]; then
+                  DEPLOY_JOB_ID=$(jq -r '.result.id // .result.Id // .result.jobId // .result.job_id // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                else
+                  DEPLOY_JOB_ID=$(grep -oP '"(id|jobId|job_id)"\s*:\s*"\K[^"]+' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                fi
+                if [ -n "$DEPLOY_JOB_ID" ]; then
+                  echo "Captured deploy job id: $DEPLOY_JOB_ID"
+                  break
+                fi
+                sleep 1
+              done
+
+              # Wait for the sf deploy process to finish (it was started with --wait)
+              wait $SF_DEPLOY_PID || true
+
+              # Show deploy output for logs
+              echo "--- deploy output ---"
+              cat "$DEPLOY_OUT_FILE" || true
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
