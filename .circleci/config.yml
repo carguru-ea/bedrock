@@ -23,8 +23,9 @@ commands:
             if ! sf --version > /dev/null 2>&1; then
               sudo npm install -g @salesforce/cli
             fi
-            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
 
+            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+            
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
 
@@ -46,14 +47,13 @@ commands:
         type: string
     steps:
       - run:
-          name: Decode JWT key
+          name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || \
-            echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
-          name: Authenticate (<< parameters.target_env >>)
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
             sf org login jwt \
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
@@ -64,7 +64,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # DEPLOY WITH TAGS (Delta + Dependent Tests + JUnit export)
+  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -76,212 +76,309 @@ commands:
     steps:
 
       # ------------------------------------------------------
-      # Find Most Recent Tag
+      # Identify most recent tag
       # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
-            PROJECT_DIR=$(dirname "$(find . -name sfdx-project.json | head -n 1)")
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             git fetch --tags
+
             currentRef=0
             currentTag=""
 
             tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
 
-            for tag in $tags; do
-              ref=$(echo "$tag" | cut -d '-' -f 2)
-              if [ "$ref" -gt "$currentRef" ]; then
-                currentRef="$ref"
-                currentTag="$tag"
-              fi
-            done
+            if [ -n "$tags" ]; then
+              for tag in $tags; do
+                refNum=$(echo $tag | cut -d '-' -f 2)
+                if [ "$refNum" -gt "$currentRef" ]; then
+                  currentRef=$refNum
+                  currentTag=$tag
+                fi
+              done
+              echo "Latest tag: $currentTag"
+            else
+              echo "No tags found for prefix << parameters.tag_prefix >>"
+            fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
             echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
-            # removed problem line below
-            # echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
+            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
 
 
       # ------------------------------------------------------
-      # Build package.xml
+      # Build package.xml (metadata-root aware)
       # ------------------------------------------------------
       - run:
           name: Build Package Manifest
           command: |
             source $BASH_ENV
-            PROJECT_DIR=$(dirname "$(find . -name sfdx-project.json | head -n 1)")
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "🔍 Building deployable metadata file list..."
+
+            # --------------------------------------------------
+            # First deployment → full metadata scan
+            # --------------------------------------------------
             if [ "$CURRENT_REF" -eq 0 ]; then
-              find force-app/main/default -type f \( \
-                -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
-                -o -name "*.component" -o -name "*.cmp" -o -name "*.app" \
-                -o -name "*-meta.xml" -o -name "*.js-meta.xml" \
-              \) > files.txt
+              echo "🚀 First deployment — scanning entire force-app for metadata roots"
+
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
             else
-              git diff --name-only "$CURRENT_TAG" HEAD | grep '^force-app/' > changed.txt || true
+              # --------------------------------------------------
+              # Delta deployment → restrict to changed metadata
+              # --------------------------------------------------
+              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
+
+              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
+
               > files.txt
-              while read -r f; do
-                case "$f" in
+
+              while IFS= read -r file; do
+                # Keep only metadata-root files
+                case "$file" in
                   *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
-                      echo "$f" >> files.txt ;;
+                      if [ -f "$file" ]; then
+                        echo "$file" >> files.txt
+                      fi
+                      ;;
                 esac
-              done < changed.txt
+              done < temp_files.txt
             fi
 
+            echo "👉 Final metadata root list:"
+            cat files.txt || echo "(none)"
+
+            # --------------------------------------------------
+            # Generate manifest
+            # --------------------------------------------------
             if [ -s files.txt ]; then
-              mapfile -t arr < files.txt
-              sf project generate manifest -p "${arr[@]}"
+              mapfile -t manifest_paths < files.txt
+              sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
+
+              echo "📦 Generated package.xml:"
+              cat package.xml
             else
+              echo "⚠️ No deployable metadata roots found."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+
+
       # ------------------------------------------------------
-      # Identify dependent test classes
+      # Identify dependent test classes (ID-based + full debug)
       # ------------------------------------------------------
       - run:
           name: Identify Dependent Test Classes
           command: |
-            set -e
+            set -euo pipefail
             source $BASH_ENV
-
-            PROJECT_DIR=$(dirname "$(find . -name sfdx-project.json | head -n 1)")
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls)' files.txt > changed_classes.txt || true
+            echo "🔍 Extracting changed Apex class names from metadata roots..."
+            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
 
             if [ ! -s changed_classes.txt ]; then
+              echo "⚠️ No Apex classes changed."
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
               exit 0
             fi
 
-            list=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
-            list="'${list}'"
+            echo "📌 Changed Apex classes:"
+            cat changed_classes.txt
+
+            # Build name list for SOQL
+            classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
+            classList="'${classList}'"
+            echo "📝 SOQL class name list: ${classList}"
+
+            # ---------------------------------------------------
+            # Step 1 — Get ApexClass IDs for changed classes
+            # ---------------------------------------------------
+            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
+
+            echo "🔎 Running SOQL to fetch ApexClass IDs:"
+            echo "$soqlClasses"
 
             sf data query \
-              --query "SELECT Id FROM ApexClass WHERE Name IN ($list)" \
-              --use-tooling-api --json > ids.json
+              --query "$soqlClasses" \
+              --use-tooling-api \
+              --target-org target \
+              --json > classIds.json
 
-            IDS=$(jq -r '.result.records[].Id' ids.json | xargs)
-            [ -z "$IDS" ] && echo "export TEST_CLASSES=\"\"" >> $BASH_ENV && exit 0
+            echo "📥 Raw response (ApexClass IDs):"
+            cat classIds.json
 
-            idsFormatted="'$(echo "$IDS" | sed "s/ /','/g")'"
+            # Parse IDs for dependency query
+            if command -v jq >/dev/null 2>&1; then
+              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
+            else
+              echo "⚠️ jq not found. Cannot parse ApexClass IDs."
+              CLASS_IDS=""
+            fi
+
+            if [ -z "$CLASS_IDS" ]; then
+              echo "⚠️ No ApexClass IDs found. Skipping dependent test discovery."
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            echo "🔗 ApexClass IDs to inspect:"
+            echo "$CLASS_IDS"
+
+            # Convert space-separated → SOQL IN ('id','id')
+            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
+            classIdList="'${classIdList}'"
+
+            # ---------------------------------------------------
+            # Step 2 — Query MetadataComponentDependency
+            # ---------------------------------------------------
+            soqlDep="SELECT MetadataComponentName
+                     FROM MetadataComponentDependency
+                     WHERE RefMetadataComponentType = 'ApexClass'
+                     AND RefMetadataComponentId IN (${classIdList})
+                     AND MetadataComponentType = 'ApexClass'"
+
+            echo "🔎 Running SOQL to fetch dependent test classes:"
+            echo "$soqlDep"
 
             sf data query \
-              --query "SELECT MetadataComponentName FROM MetadataComponentDependency WHERE RefMetadataComponentId IN ($idsFormatted)" \
-              --use-tooling-api --json > deps.json
+              --query "$soqlDep" \
+              --use-tooling-api \
+              --target-org target \
+              --json > dependentTests.json || {
+                echo '⚠️ Dependency SOQL failed — falling back to no tests.'
+                echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+                exit 0
+              }
 
-            TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' deps.json | xargs)
-            echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+            echo "📥 Raw dependency response:"
+            cat dependentTests.json
+
+            # Extract names
+            if command -v jq >/dev/null 2>&1; then
+              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            else
+              echo "⚠️ jq missing — cannot parse dependency results"
+              TEST_CLASSES=""
+            fi
+
+            if [ -z "$TEST_CLASSES" ]; then
+              echo "⚠️ No dependent test classes found."
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+            else
+              echo "🎯 Dependent Test Classes:"
+              echo "$TEST_CLASSES"
+              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+            fi
+
+
 
       # ------------------------------------------------------
-      # DEPLOY + RUN TESTS ONCE + CAPTURE DEPLOY ID
+      # Deploy with dynamic / conditional test execution
       # ------------------------------------------------------
       - run:
-          name: Deploy Metadata (Run Tests Once)
+          name: Deploy Metadata (Dynamic Tests)
           command: |
-            set -e
+            set -euo pipefail
             source $BASH_ENV
-
-            mkdir -p test-results
-
-            PROJECT_DIR=$(dirname "$(find . -name sfdx-project.json | head -n 1)")
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No changes to deploy."
               echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
               exit 0
             fi
 
-            if [ -n "$TEST_CLASSES" ]; then
+            mkdir -p test-results
+
+            # --------------------------------------------------
+            # CASE 1 — Dependent tests found → RunSpecifiedTests
+            # --------------------------------------------------
+            if [ -n "${TEST_CLASSES}" ]; then
+              echo "🎯 Dependent test classes detected:"
+              echo "$TEST_CLASSES"
+              echo "🚀 Deploying with RunSpecifiedTests..."
+
               TEST_ARGS=""
               for t in $TEST_CLASSES; do
                 TEST_ARGS="$TEST_ARGS --tests $t"
               done
 
-              OUT=$(sf project deploy start \
+              echo "🔥 Final TEST_ARGS: $TEST_ARGS"
+
+              sf project deploy start \
                 --manifest package.xml \
+                --target-org target \
                 --test-level RunSpecifiedTests \
                 $TEST_ARGS \
-                --ignore-conflicts \
                 --wait 360 \
-                --json)
-            else
-              OUT=$(sf project deploy start \
-                --manifest package.xml \
-                --test-level NoTestRun \
-                --ignore-conflicts \
-                --wait 360 \
-                --json)
+                --ignore-conflicts 
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
             fi
 
-            echo "$OUT" > deploy-start.json
-            DEPLOY_ID=$(jq -r '.result.id' deploy-start.json)
-            echo "$DEPLOY_ID" > deploy-id.txt
+            # --------------------------------------------------
+            # CASE 2 — NO dependent tests → NoTestRun
+            # --------------------------------------------------
+            echo "🛑 No dependent Apex test classes found."
+            echo "📦 Proceeding with NoTestRun."
+
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level NoTestRun \
+              --ignore-conflicts \
+              --wait 360 
+
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
-      # ------------------------------------------------------
-      # Extract JUnit XML from deploy report
-      # ------------------------------------------------------
-      - run:
-          name: Extract JUnit XML
-          command: |
-            set -e
-            DEPLOY_ID=$(cat deploy-id.txt)
-
-            sf project deploy report \
-              --job-id "$DEPLOY_ID" \
-              --json > deploy-report.json
-
-            node << 'EOF'
-            const fs = require('fs');
-            const data = JSON.parse(fs.readFileSync('deploy-report.json', 'utf8'));
-
-            const tests = data.result.runTestResult?.records || [];
-            let xml = '<?xml version="1.0"?>\n<testsuites>\n';
-
-            tests.forEach(t => {
-              xml += `  <testsuite name="${t.name}" tests="1">\n`;
-              xml += `    <testcase classname="${t.name}" name="${t.name}">\n`;
-              if (t.message) {
-                xml += `      <failure message="${t.message}">${t.stackTrace}</failure>\n`;
-              }
-              xml += '    </testcase>\n';
-              xml += '  </testsuite>\n';
-            });
-
-            xml += '</testsuites>';
-            fs.writeFileSync('test-results/salesforce-tests.xml', xml);
-            EOF
-
-
 
       # ------------------------------------------------------
-      # Create New Tag
+      # Tag creation
       # ------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
-            PROJECT_DIR=$(dirname "$(find . -name sfdx-project.json | head -n 1)")
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
-              NEXT=$((CURRENT_REF + 1))
-              NEWTAG="$TAG_PREFIX-$NEXT"
+              NEW_REF=$((CURRENT_REF + 1))
+              NEW_TAG="$TAG_PREFIX-$NEW_REF"
+
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-              git tag "$NEWTAG"
-              git push origin "$NEWTAG"
+              git tag "$NEW_TAG"
+              git push origin "$NEW_TAG"
             fi
 
+
+
 # ============================================================
-# JOBS
+# JOBS PER ORG
 # ============================================================
 jobs:
+
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -324,19 +421,25 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+
+
 # ============================================================
-# WORKFLOWS
+# WORKFLOWS (BRANCH → ENVIRONMENT)
 # ============================================================
 workflows:
   version: 2
+
   build-test-deploy:
     jobs:
+
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -344,6 +447,8 @@ workflows:
           filters:
             branches:
               only: BRStaging
+            tags:
+              ignore: /.*/
 
       - deploy-main:
           context: sf-prod
@@ -351,3 +456,5 @@ workflows:
           filters:
             branches:
               only: main
+            tags:
+              ignore: /.*/
