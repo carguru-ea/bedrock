@@ -100,7 +100,9 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
             echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
-            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
+            # removed problem line below
+            # echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
+
 
       # ------------------------------------------------------
       # Build package.xml
