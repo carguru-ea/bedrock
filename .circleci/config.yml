@@ -299,7 +299,7 @@ commands:
 
 
       # ------------------------------------------------------
-      # Deploy with dynamic / conditional test execution (with cancel trap)
+      # Deploy with dynamic / conditional test execution (Async + Cancel Trap)
       # ------------------------------------------------------
       - run:
           name: Deploy Metadata (Dynamic Tests + Async + Cancel Trap)
@@ -309,32 +309,31 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            # -------------------------------------------------------------------
-            # Trap is defined BEFORE starting deploy
-            # -------------------------------------------------------------------
+            # --------------------------------------------------
+            # Trap must be defined BEFORE starting deploy
+            # --------------------------------------------------
             DEPLOY_ID=""
 
             cleanup() {
-              echo "🧹 Caught pipeline/job cancellation. Attempting to cancel Salesforce deploy…"
+              echo "🧹 Caught CircleCI cancellation signal — cancelling Salesforce deployment…"
               if [ -n "$DEPLOY_ID" ]; then
-                echo "⛔ Cancelling deploy ID: $DEPLOY_ID"
-                sf project deploy cancel --target-org target --job-id "$DEPLOY_ID" || true
+                echo "⛔ Running: sf project deploy cancel --job-id $DEPLOY_ID"
+                sf project deploy cancel --job-id "$DEPLOY_ID" || true
               else
-                echo "⚠️ No deploy ID available yet."
+                echo "⚠️ No deploy ID captured yet — nothing to cancel."
               fi
             }
 
-            # Trap SIGTERM (job killed), SIGINT (Ctrl-C)
+            # Trap SIGTERM (pipeline cancel) + SIGINT
             trap cleanup TERM INT
 
 
-            # -------------------------------------------------------------------
-            # FULL DEPLOY case (no delta roots found earlier)
-            # -------------------------------------------------------------------
+            # --------------------------------------------------
+            # FULL DEPLOY (no delta detected earlier)
+            # --------------------------------------------------
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "⚠️ No delta detected → running full deploy with full tests."
 
-              # Build manifest
               find force-app/main/default -type f \
                 \( -name "*.cls" \
                 -o -name "*.trigger" \
@@ -343,35 +342,33 @@ commands:
                 -o -name "*.cmp" \
                 -o -name "*.app" \
                 -o -name "*-meta.xml" \
-                -o -name "*.js-meta.xml" \
-                \) > files.txt || true
+                -o -name "*.js-meta.xml" \) > files.txt || true
 
               if [ -s files.txt ]; then
                 mapfile -t manifest_paths < files.txt
                 sf project generate manifest -p "${manifest_paths[@]}"
+                export CHANGES_FOUND=true
                 export TEST_LEVEL="RunLocalTests"
-                export CHANGES_FOUND="true"
                 echo "📦 Generated full manifest:"
                 cat package.xml
               else
-                echo "⚠️ Nothing to deploy."
+                echo "⚠️ No metadata files found. Exiting."
                 echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
                 exit 0
               fi
             fi
 
 
-            # -------------------------------------------------------------------
-            # Determine test options
-            # -------------------------------------------------------------------
+            # --------------------------------------------------
+            # Resolve test level + test args
+            # --------------------------------------------------
             TEST_ARGS=""
             DEPLOY_TEST_LEVEL="NoTestRun"
 
             if [ -n "${TEST_CLASSES:-}" ]; then
-              echo "🎯 Dependent test classes detected:"
+              echo "🎯 Dependent test classes:"
               echo "$TEST_CLASSES"
               DEPLOY_TEST_LEVEL="RunSpecifiedTests"
-
               for t in $TEST_CLASSES; do
                 TEST_ARGS="$TEST_ARGS --tests $t"
               done
@@ -383,15 +380,14 @@ commands:
             echo "➡️ Final Test Args: $TEST_ARGS"
 
 
-            # -------------------------------------------------------------------
-            # START ASYNC DEPLOY (non-blocking, get deploy ID)
-            # -------------------------------------------------------------------
+            # --------------------------------------------------
+            # START ASYNC DEPLOY (non-blocking)
+            # --------------------------------------------------
             echo "🚀 Starting async Salesforce deploy…"
 
             DEPLOY_ID=$(
               sf project deploy start \
                 --manifest package.xml \
-                --target-org target \
                 --test-level "$DEPLOY_TEST_LEVEL" \
                 $TEST_ARGS \
                 --ignore-conflicts \
@@ -402,14 +398,21 @@ commands:
             echo "📌 Deploy started. ID: $DEPLOY_ID"
 
 
-            # -------------------------------------------------------------------
-            # WAIT / RESUME (blocks and allows trap to work)
-            # -------------------------------------------------------------------
+            # --------------------------------------------------
+            # RESUME DEPLOY IN BACKGROUND (critical for trap)
+            # --------------------------------------------------
             echo "⏳ Waiting for deploy to finish (resume mode)…"
 
             sf project deploy resume \
               --job-id "$DEPLOY_ID" \
-              --json
+              --json &
+            RESUME_PID=$!
+
+            # Backgrounding = allows bash to receive SIGTERM
+            wait $RESUME_PID
+
+            # If resume finished normally, deployment succeeded
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
 
       # ------------------------------------------------------
