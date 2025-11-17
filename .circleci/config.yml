@@ -299,20 +299,42 @@ commands:
 
 
       # ------------------------------------------------------
-      # Deploy with dynamic / conditional test execution 
+      # Deploy with dynamic / conditional test execution (with cancel trap)
       # ------------------------------------------------------
       - run:
-          name: Deploy Metadata (Dynamic Tests)
+          name: Deploy Metadata (Dynamic Tests + Async + Cancel Trap)
           command: |
             set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta changes detected — performing full scan and deploying all components with full tests."
+            # -------------------------------------------------------------------
+            # Trap is defined BEFORE starting deploy
+            # -------------------------------------------------------------------
+            DEPLOY_ID=""
 
-              # Build full manifest across the metadata root
+            cleanup() {
+              echo "🧹 Caught pipeline/job cancellation. Attempting to cancel Salesforce deploy…"
+              if [ -n "$DEPLOY_ID" ]; then
+                echo "⛔ Cancelling deploy ID: $DEPLOY_ID"
+                sf project deploy cancel --target-org target --job-id "$DEPLOY_ID" || true
+              else
+                echo "⚠️ No deploy ID available yet."
+              fi
+            }
+
+            # Trap SIGTERM (job killed), SIGINT (Ctrl-C)
+            trap cleanup TERM INT
+
+
+            # -------------------------------------------------------------------
+            # FULL DEPLOY case (no delta roots found earlier)
+            # -------------------------------------------------------------------
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No delta detected → running full deploy with full tests."
+
+              # Build manifest
               find force-app/main/default -type f \
                 \( -name "*.cls" \
                 -o -name "*.trigger" \
@@ -327,78 +349,71 @@ commands:
               if [ -s files.txt ]; then
                 mapfile -t manifest_paths < files.txt
                 sf project generate manifest -p "${manifest_paths[@]}"
-                # Persist for later steps and for subsequent commands in this shell
-                echo "export CHANGES_FOUND=true" >> $BASH_ENV
-                echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
-                # Also export into the current shell so the rest of this run uses it immediately
-                export CHANGES_FOUND=true
-                export TEST_LEVEL=RunLocalTests
-                echo "📦 Generated full package.xml for full deploy:" 
-                cat package.xml || true
+                export TEST_LEVEL="RunLocalTests"
+                export CHANGES_FOUND="true"
+                echo "📦 Generated full manifest:"
+                cat package.xml
               else
-                echo "⚠️ No metadata files found during full scan. Nothing to deploy."
+                echo "⚠️ Nothing to deploy."
                 echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
                 exit 0
               fi
             fi
 
-            mkdir -p test-results
 
-            # --------------------------------------------------
-            # CASE 1 — Dependent tests found → RunSpecifiedTests
-            # --------------------------------------------------
-            if [ -n "${TEST_CLASSES}" ]; then
+            # -------------------------------------------------------------------
+            # Determine test options
+            # -------------------------------------------------------------------
+            TEST_ARGS=""
+            DEPLOY_TEST_LEVEL="NoTestRun"
+
+            if [ -n "${TEST_CLASSES:-}" ]; then
               echo "🎯 Dependent test classes detected:"
               echo "$TEST_CLASSES"
-              echo "🚀 Deploying with RunSpecifiedTests..."
+              DEPLOY_TEST_LEVEL="RunSpecifiedTests"
 
-              TEST_ARGS=""
               for t in $TEST_CLASSES; do
                 TEST_ARGS="$TEST_ARGS --tests $t"
               done
+            elif [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
+              DEPLOY_TEST_LEVEL="RunLocalTests"
+            fi
 
-              echo "🔥 Final TEST_ARGS: $TEST_ARGS"
+            echo "➡️ Final Test Level: $DEPLOY_TEST_LEVEL"
+            echo "➡️ Final Test Args: $TEST_ARGS"
 
+
+            # -------------------------------------------------------------------
+            # START ASYNC DEPLOY (non-blocking, get deploy ID)
+            # -------------------------------------------------------------------
+            echo "🚀 Starting async Salesforce deploy…"
+
+            DEPLOY_ID=$(
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
-                --test-level RunSpecifiedTests \
+                --test-level "$DEPLOY_TEST_LEVEL" \
                 $TEST_ARGS \
-                --wait 360 \
-                --ignore-conflicts 
-
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
-
-            # --------------------------------------------------
-            # CASE 2 — NO dependent tests → either run all local tests or NoTestRun
-            # --------------------------------------------------
-            echo "🛑 No dependent Apex test classes found."
-            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
-              echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
-
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
                 --ignore-conflicts \
-                --wait 360 
+                --async \
+                --json | jq -r '.result.id'
+            )
 
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
+            echo "📌 Deploy started. ID: $DEPLOY_ID"
 
-            echo "📦 Proceeding with NoTestRun."
 
-            sf project deploy start \
-              --manifest package.xml \
+            # -------------------------------------------------------------------
+            # WAIT / RESUME (blocks and allows trap to work)
+            # -------------------------------------------------------------------
+            echo "⏳ Waiting for deploy to finish (resume mode)…"
+            sf project deploy resume \
+              --job-id "$DEPLOY_ID" \
               --target-org target \
-              --test-level NoTestRun \
-              --ignore-conflicts \
-              --wait 360 
+              --json
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+
+
 
 
       # ------------------------------------------------------
