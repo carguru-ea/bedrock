@@ -68,9 +68,6 @@ commands:
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
-      test_level:
-        type: string
-        default: RunLocalTests
       tag_prefix:
         type: string
     steps:
@@ -302,9 +299,32 @@ commands:
             cd "$PROJECT_DIR"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No changes to deploy."
-              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
-              exit 0
+              echo "⚠️ No delta changes detected — performing full scan and deploying all components with full tests."
+
+              # Build full manifest across the metadata root
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
+              if [ -s files.txt ]; then
+                mapfile -t manifest_paths < files.txt
+                sf project generate manifest -p "${manifest_paths[@]}"
+                echo "export CHANGES_FOUND=true" >> $BASH_ENV
+                echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
+                echo "📦 Generated full package.xml for full deploy:" 
+                cat package.xml || true
+              else
+                echo "⚠️ No metadata files found during full scan. Nothing to deploy."
+                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                exit 0
+              fi
             fi
 
             mkdir -p test-results
