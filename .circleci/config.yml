@@ -181,48 +181,114 @@ commands:
 
 
       # ------------------------------------------------------
-      # Identify dependent test classes
+      # Identify dependent test classes (ID-based + full debug)
       # ------------------------------------------------------
       - run:
           name: Identify Dependent Test Classes
           command: |
+            set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "🔍 Extracting changed Apex class names from metadata roots..."
             grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
 
             if [ ! -s changed_classes.txt ]; then
+              echo "⚠️ No Apex classes changed."
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
               exit 0
             fi
 
+            echo "📌 Changed Apex classes:"
+            cat changed_classes.txt
+
+            # Build name list for SOQL
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
+            echo "📝 SOQL class name list: ${classList}"
 
-            echo "SOQL ClassList: $classList"
+            # ---------------------------------------------------
+            # Step 1 — Get ApexClass IDs for changed classes
+            # ---------------------------------------------------
+            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
 
-            if ! sf data query \
-              --query "SELECT MetadataComponentName
-                       FROM MetadataComponentDependency
-                       WHERE RefMetadataComponentType IN ('ApexClass','ApexTrigger')
-                       AND RefMetadataComponentName IN (${classList})
-                       AND MetadataComponentType = 'ApexClass'
-                       AND MetadataComponentName LIKE '%Test%'" \
+            echo "🔎 Running SOQL to fetch ApexClass IDs:"
+            echo "$soqlClasses"
+
+            sf data query \
+              --query "$soqlClasses" \
               --use-tooling-api \
               --target-org target \
-              --json > dependentTests.json; then
+              --json > classIds.json
+
+            echo "📥 Raw response (ApexClass IDs):"
+            cat classIds.json
+
+            # Parse IDs for dependency query
+            if command -v jq >/dev/null 2>&1; then
+              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
+            else
+              echo "⚠️ jq not found. Cannot parse ApexClass IDs."
+              CLASS_IDS=""
+            fi
+
+            if [ -z "$CLASS_IDS" ]; then
+              echo "⚠️ No ApexClass IDs found. Skipping dependent test discovery."
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            echo "🔗 ApexClass IDs to inspect:"
+            echo "$CLASS_IDS"
+
+            # Convert space-separated → SOQL IN ('id','id')
+            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
+            classIdList="'${classIdList}'"
+
+            # ---------------------------------------------------
+            # Step 2 — Query MetadataComponentDependency
+            # ---------------------------------------------------
+            soqlDep="SELECT MetadataComponentName
+                     FROM MetadataComponentDependency
+                     WHERE RefMetadataComponentType = 'ApexClass'
+                     AND RefMetadataComponentId IN (${classIdList})
+                     AND MetadataComponentType = 'ApexClass'
+                     AND MetadataComponentName LIKE '%Test%'"
+
+            echo "🔎 Running SOQL to fetch dependent test classes:"
+            echo "$soqlDep"
+
+            sf data query \
+              --query "$soqlDep" \
+              --use-tooling-api \
+              --target-org target \
+              --json > dependentTests.json || {
+                echo '⚠️ Dependency SOQL failed — falling back to no tests.'
                 echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
                 exit 0
-            fi
+              }
 
-            TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            echo "📥 Raw dependency response:"
+            cat dependentTests.json
+
+            # Extract names
+            if command -v jq >/dev/null 2>&1; then
+              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            else
+              echo "⚠️ jq missing — cannot parse dependency results"
+              TEST_CLASSES=""
+            fi
 
             if [ -z "$TEST_CLASSES" ]; then
+              echo "⚠️ No dependent test classes found."
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
             else
+              echo "🎯 Dependent Test Classes:"
+              echo "$TEST_CLASSES"
               echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
             fi
+
 
 
       # ------------------------------------------------------
