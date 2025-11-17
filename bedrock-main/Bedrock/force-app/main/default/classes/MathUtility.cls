@@ -1,5 +1,5 @@
 /**
- * @description Math utility for calculations
+ * @description Math utility for calculationss
  */
 public class MathUtility {
     
