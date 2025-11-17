@@ -307,22 +307,22 @@ commands:
               exit 0
             fi
 
+            mkdir -p test-results
+
             # --------------------------------------------------
             # CASE 1 — Dependent tests found → RunSpecifiedTests
             # --------------------------------------------------
             if [ -n "${TEST_CLASSES}" ]; then
               echo "🎯 Dependent test classes detected:"
               echo "$TEST_CLASSES"
-              echo "🚀 Deploying with RunSpecifiedTests (new SF CLI format)..."
+              echo "🚀 Deploying with RunSpecifiedTests..."
 
-              # Convert: "A B C" → "--tests A --tests B --tests C"
               TEST_ARGS=""
               for t in $TEST_CLASSES; do
                 TEST_ARGS="$TEST_ARGS --tests $t"
               done
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
-              mkdir -p test-results
 
               sf project deploy start \
                 --manifest package.xml \
@@ -342,28 +342,28 @@ commands:
             # CASE 2 — NO dependent tests → NoTestRun
             # --------------------------------------------------
             echo "🛑 No dependent Apex test classes found."
-            echo "📦 Proceeding with metadata-only deployment using NoTestRun."
+            echo "📦 Proceeding with NoTestRun."
 
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
               --ignore-conflicts \
-              --wait 360
+              --wait 360 \
               --test-result-format junit \
               --results-dir test-results
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
- 
-   
-        - store_test_results:
-            path: test-results
-  
-        - store_artifacts:
-            path: test-results
-            destination: apex-tests
 
+      # ------------------------------------------------------
+      # Store Test Results (must be outside the run block)
+      # ------------------------------------------------------
+      - store_test_results:
+          path: test-results
 
+      - store_artifacts:
+          path: test-results
+          destination: apex-tests
 
 
       # ------------------------------------------------------
