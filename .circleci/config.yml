@@ -9,7 +9,7 @@ orbs:
 commands:
 
   # ----------------------------------------------------------
-  # Install Salesforce CLI + Java
+  # Install Salesforce CLI + Java  
   # ----------------------------------------------------------
   install-tooling:
     steps:
