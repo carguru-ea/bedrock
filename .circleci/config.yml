@@ -235,27 +235,26 @@ commands:
               --json > deploy-report.json
 
             node << 'EOF'
-const fs = require('fs')
-const data = JSON.parse(fs.readFileSync('deploy-report.json', 'utf8'))
-const tests = data.result.runTestResult?.records || []
-let xml = '<?xml version="1.0"?>\n<testsuites>\n'
-tests.forEach(t => {
-  xml += `  <testsuite name="${t.name}" tests="1">\n`
-  xml += `    <testcase classname="${t.name}" name="${t.name}">\n`
-  if (t.message) xml += `      <failure message="${t.message}">${t.stackTrace}</failure>\n`
-  xml += '    </testcase>\n'
-  xml += '  </testsuite>\n'
-})
-xml += '</testsuites>'
-fs.writeFileSync('test-results/salesforce-tests.xml', xml)
-EOF
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('deploy-report.json', 'utf8'));
 
-      - store_test_results:
-          path: test-results
+            const tests = data.result.runTestResult?.records || [];
+            let xml = '<?xml version="1.0"?>\n<testsuites>\n';
 
-      - store_artifacts:
-          path: test-results
-          destination: apex-tests
+            tests.forEach(t => {
+              xml += `  <testsuite name="${t.name}" tests="1">\n`;
+              xml += `    <testcase classname="${t.name}" name="${t.name}">\n`;
+              if (t.message) {
+                xml += `      <failure message="${t.message}">${t.stackTrace}</failure>\n`;
+              }
+              xml += '    </testcase>\n';
+              xml += '  </testsuite>\n';
+            });
+
+            xml += '</testsuites>';
+            fs.writeFileSync('test-results/salesforce-tests.xml', xml);
+            EOF
+
 
 
       # ------------------------------------------------------
