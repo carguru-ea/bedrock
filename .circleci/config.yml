@@ -405,15 +405,45 @@ commands:
                 sleep 1
               done
 
-              # Wait for the sf deploy process to finish (it was started with --wait)
-              wait $SF_DEPLOY_PID || true
+                # Wait for the sf deploy process to finish (it was started with --wait)
+                wait $SF_DEPLOY_PID
+                SF_RC=$?
 
-              # Show deploy output for logs
-              echo "--- deploy output ---"
-              cat "$DEPLOY_OUT_FILE" || true
+                # Show deploy output for logs
+                echo "--- deploy output ---"
+                cat "$DEPLOY_OUT_FILE" || true
 
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
+                # Determine success from CLI JSON (best-effort)
+                DEPLOY_SUCCESS=false
+                if command -v jq >/dev/null 2>&1 && [ -s "$DEPLOY_OUT_FILE" ]; then
+                  JSON_SUCCESS=$(jq -r '.result.success // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                  JSON_STATUS=$(jq -r '.result.status // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                  JSON_ERRORS=$(jq -r '.result.numberComponentErrors // .result.numberErrors // 0' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                  if [ "$JSON_SUCCESS" = "true" ] || [ "$JSON_STATUS" = "Succeeded" ]; then
+                    if [ "${JSON_ERRORS:-0}" -eq 0 ]; then
+                      DEPLOY_SUCCESS=true
+                    fi
+                  fi
+                else
+                  # If no jq, try to detect failure via text and exit code
+                  if grep -q '"success"\s*:\s*true' "$DEPLOY_OUT_FILE" 2>/dev/null; then
+                    DEPLOY_SUCCESS=true
+                  fi
+                fi
+
+                # Also respect the process exit code
+                if [ $SF_RC -ne 0 ]; then
+                  DEPLOY_SUCCESS=false
+                fi
+
+                if [ "$DEPLOY_SUCCESS" = true ]; then
+                  echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+                  exit 0
+                else
+                  echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                  echo "Deploy failed — exiting with non-zero status to fail pipeline"
+                  exit 1
+                fi
             fi
 
             # --------------------------------------------------
@@ -423,27 +453,64 @@ commands:
             if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
               echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
 
+              DEPLOY_OUT_FILE=$(mktemp)
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunLocalTests \
                 --ignore-conflicts \
-                --wait 360 
+                --wait 360 \
+                --json > "$DEPLOY_OUT_FILE" 2>&1 || true
 
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
+              echo "--- deploy output ---"
+              cat "$DEPLOY_OUT_FILE" || true
+
+              # Evaluate deploy result
+              if command -v jq >/dev/null 2>&1 && [ -s "$DEPLOY_OUT_FILE" ]; then
+                JSON_SUCCESS=$(jq -r '.result.success // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                JSON_STATUS=$(jq -r '.result.status // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                JSON_ERRORS=$(jq -r '.result.numberComponentErrors // .result.numberErrors // 0' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+                if { [ "$JSON_SUCCESS" = "true" ] || [ "$JSON_STATUS" = "Succeeded" ]; } && [ "${JSON_ERRORS:-0}" -eq 0 ]; then
+                  echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+                  exit 0
+                fi
+              fi
+
+              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+              echo "Deploy failed — exiting with non-zero status to fail pipeline"
+              exit 1
             fi
 
             echo "📦 Proceeding with NoTestRun."
 
+            DEPLOY_OUT_FILE=$(mktemp)
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
               --ignore-conflicts \
-              --wait 360 
+              --wait 360 \
+              --json > "$DEPLOY_OUT_FILE" 2>&1 || true
 
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+            echo "--- deploy output ---"
+            cat "$DEPLOY_OUT_FILE" || true
+
+            if command -v jq >/dev/null 2>&1 && [ -s "$DEPLOY_OUT_FILE" ]; then
+              JSON_SUCCESS=$(jq -r '.result.success // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+              JSON_STATUS=$(jq -r '.result.status // empty' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+              JSON_ERRORS=$(jq -r '.result.numberComponentErrors // .result.numberErrors // 0' "$DEPLOY_OUT_FILE" 2>/dev/null || true)
+              if { [ "$JSON_SUCCESS" = "true" ] || [ "$JSON_STATUS" = "Succeeded" ]; } && [ "${JSON_ERRORS:-0}" -eq 0 ]; then
+                echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              else
+                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                echo "Deploy failed — exiting with non-zero status to fail pipeline"
+                exit 1
+              fi
+            else
+              echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+              echo "Deploy failed or could not determine status — exiting with non-zero status to fail pipeline"
+              exit 1
+            fi
 
 
       # ------------------------------------------------------
