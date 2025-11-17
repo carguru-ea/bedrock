@@ -1,5 +1,5 @@
 /**
- * @description Case handler for case managements
+ * @description Case handler for case managementss
  */
 public class CaseHandler {
     
