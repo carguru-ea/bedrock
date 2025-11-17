@@ -318,7 +318,7 @@ commands:
               echo "🧹 Caught CircleCI cancellation signal — cancelling Salesforce deployment…"
               if [ -n "$DEPLOY_ID" ]; then
                 SHORT_ID=${DEPLOY_ID:0:15}
-                echo "⛔ Running: sf project deploy cancel --job-id $SHORT_ID --target-org target"
+                echo "⛔ Running: sf project deploy cancel --job-id $SHORT_ID"
                 sf project deploy cancel --job-id "$SHORT_ID" || true
                 sleep 3
               else
