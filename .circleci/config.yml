@@ -357,9 +357,23 @@ commands:
             fi
 
             # --------------------------------------------------
-            # CASE 2 — NO dependent tests → NoTestRun
+            # CASE 2 — NO dependent tests → either run all local tests or NoTestRun
             # --------------------------------------------------
             echo "🛑 No dependent Apex test classes found."
+            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
+              echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
+
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --ignore-conflicts \
+                --wait 360 
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
+            fi
+
             echo "📦 Proceeding with NoTestRun."
 
             sf project deploy start \
