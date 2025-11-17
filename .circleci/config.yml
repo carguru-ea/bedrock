@@ -253,8 +253,7 @@ commands:
                      FROM MetadataComponentDependency
                      WHERE RefMetadataComponentType = 'ApexClass'
                      AND RefMetadataComponentId IN (${classIdList})
-                     AND MetadataComponentType = 'ApexClass'
-                     AND MetadataComponentName LIKE '%Test%'"
+                     AND MetadataComponentType = 'ApexClass'"
 
             echo "🔎 Running SOQL to fetch dependent test classes:"
             echo "$soqlDep"
