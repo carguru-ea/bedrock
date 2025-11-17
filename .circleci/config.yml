@@ -316,8 +316,12 @@ commands:
               if [ -s files.txt ]; then
                 mapfile -t manifest_paths < files.txt
                 sf project generate manifest -p "${manifest_paths[@]}"
+                # Persist for later steps and for subsequent commands in this shell
                 echo "export CHANGES_FOUND=true" >> $BASH_ENV
                 echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
+                # Also export into the current shell so the rest of this run uses it immediately
+                export CHANGES_FOUND=true
+                export TEST_LEVEL=RunLocalTests
                 echo "📦 Generated full package.xml for full deploy:" 
                 cat package.xml || true
               else
