@@ -315,22 +315,16 @@ commands:
             DEPLOY_ID=""
 
             cleanup() {
-              echo "🧹 Caught CircleCI cancellation — cancelling Salesforce deployment…"
-
+              echo "🧹 Caught CircleCI cancellation signal — cancelling Salesforce deployment…"
               if [ -n "$DEPLOY_ID" ]; then
                 SHORT_ID=${DEPLOY_ID:0:15}
-                echo "🔪 Cancel ID (15-char): $SHORT_ID"
-
-                sf project deploy cancel \
-                  --job-id "$SHORT_ID" \
-                  --target-org target || true
-
+                echo "⛔ Running: sf project deploy cancel --job-id $SHORT_ID --target-org target"
+                sf project deploy cancel --job-id "$SHORT_ID" || true
                 sleep 3
               else
-                echo "⚠️ No DEPLOY_ID, nothing to cancel."
+                echo "⚠️ No deploy ID captured — nothing to cancel."
               fi
             }
-
 
             trap cleanup TERM INT
 
