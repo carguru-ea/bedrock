@@ -1,5 +1,5 @@
 /**
- * @description Notification service for sending alerts
+ * @description Notification service for sending alertss
  */
 public class NotificationService {
     
