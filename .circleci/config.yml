@@ -188,16 +188,18 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            # STOP if nothing changed
+            # ensure workspace directory always exists
+            mkdir -p deploy-info
+
+            # Stop if nothing changed
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No metadata changes found — skipping Salesforce deployment."
-              mkdir -p deploy-info
+              echo "⚠️ No metadata changes detected — skipping deployment."
               echo "SKIPPED" > deploy-info/deploy_id.txt
               echo "$CURRENT_REF" > deploy-info/current_ref.txt
               exit 0
             fi
 
-            # Test config
+            # Test configuration
             TEST_ARGS=""
             DEPLOY_TEST_LEVEL="NoTestRun"
 
@@ -208,7 +210,7 @@ commands:
               DEPLOY_TEST_LEVEL="RunLocalTests"
             fi
 
-            echo "🚀 Starting async deploy with test level: $DEPLOY_TEST_LEVEL"
+            echo "🚀 Starting async deploy…"
 
             DEPLOY_ID=$(
               sf project deploy start \
@@ -220,9 +222,9 @@ commands:
                 --json | jq -r '.result.id'
             )
 
-            mkdir -p deploy-info
             echo "$DEPLOY_ID" > deploy-info/deploy_id.txt
             echo "$CURRENT_REF" > deploy-info/current_ref.txt
+
 
 
       # Save deploy info
