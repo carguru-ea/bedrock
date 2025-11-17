@@ -181,9 +181,6 @@ commands:
             echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
 
 
-      # ------------------------------------------------------
-      # Start Async Deployment ONLY
-      # ------------------------------------------------------
       - run:
           name: Start Async Deployment
           command: |
@@ -191,15 +188,27 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            # STOP if nothing changed
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No metadata changes found — skipping Salesforce deployment."
+              mkdir -p deploy-info
+              echo "SKIPPED" > deploy-info/deploy_id.txt
+              echo "$CURRENT_REF" > deploy-info/current_ref.txt
+              exit 0
+            fi
+
+            # Test config
             TEST_ARGS=""
             DEPLOY_TEST_LEVEL="NoTestRun"
 
             if [ -n "$TEST_CLASSES" ]; then
               DEPLOY_TEST_LEVEL="RunSpecifiedTests"
               for T in $TEST_CLASSES; do TEST_ARGS="$TEST_ARGS --tests $T"; done
-            elif [ "$CHANGES_FOUND" = "true" ]; then
+            else
               DEPLOY_TEST_LEVEL="RunLocalTests"
             fi
+
+            echo "🚀 Starting async deploy with test level: $DEPLOY_TEST_LEVEL"
 
             DEPLOY_ID=$(
               sf project deploy start \
@@ -211,8 +220,10 @@ commands:
                 --json | jq -r '.result.id'
             )
 
+            mkdir -p deploy-info
             echo "$DEPLOY_ID" > deploy-info/deploy_id.txt
             echo "$CURRENT_REF" > deploy-info/current_ref.txt
+
 
       # Save deploy info
       - persist_to_workspace:
