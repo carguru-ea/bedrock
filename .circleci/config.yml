@@ -319,7 +319,7 @@ commands:
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunSpecifiedTests \
-                --tests "$TEST_CLASSES" \
+                --tests "$(echo $TEST_CLASSES | tr ' ' ',')" \
                 --wait 360 \
                 --ignore-conflicts
 
