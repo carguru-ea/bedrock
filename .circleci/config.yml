@@ -399,7 +399,7 @@ commands:
 
 
             # --------------------------------------------------
-            # RESUME DEPLOY IN BACKGROUND (critical for trap)
+            # RESUME DEPLOY IN BACKGROUND (critical for trap) 
             # --------------------------------------------------
             echo "⏳ Waiting for deploy to finish (resume mode)…"
 
