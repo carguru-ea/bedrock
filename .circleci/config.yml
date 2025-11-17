@@ -190,7 +190,7 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            grep -oP '(?<=classes/)[^/]+(?=\.cls$)' files.txt > changed_classes.txt || true
+            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
 
             if [ ! -s changed_classes.txt ]; then
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
