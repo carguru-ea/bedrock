@@ -310,21 +310,21 @@ commands:
             cd "$PROJECT_DIR"
 
             # --------------------------------------------------
-            # Trap must be defined BEFORE starting deploy
+            # Trap cancellation FIRST (to ensure it catches signal)
             # --------------------------------------------------
             DEPLOY_ID=""
 
             cleanup() {
               echo "🧹 Caught CircleCI cancellation signal — cancelling Salesforce deployment…"
               if [ -n "$DEPLOY_ID" ]; then
-                echo "⛔ Running: sf project deploy cancel --job-id $DEPLOY_ID"
-                sf project deploy cancel --job-id "$DEPLOY_ID" || true
+                echo "⛔ Running: sf project deploy cancel --job-id $DEPLOY_ID --target-org target"
+                sf project deploy cancel --job-id "$DEPLOY_ID" --target-org target || true
+                sleep 3
               else
-                echo "⚠️ No deploy ID captured yet — nothing to cancel."
+                echo "⚠️ No deploy ID captured — nothing to cancel."
               fi
             }
 
-            # Trap SIGTERM (pipeline cancel) + SIGINT
             trap cleanup TERM INT
 
 
