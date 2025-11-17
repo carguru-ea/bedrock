@@ -406,14 +406,10 @@ commands:
             # WAIT / RESUME (blocks and allows trap to work)
             # -------------------------------------------------------------------
             echo "⏳ Waiting for deploy to finish (resume mode)…"
+
             sf project deploy resume \
               --job-id "$DEPLOY_ID" \
-              --target-org target \
               --json
-
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-
-
 
 
       # ------------------------------------------------------
