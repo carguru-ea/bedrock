@@ -305,6 +305,39 @@ commands:
           name: Deploy Metadata (Dynamic Tests)
           command: |
             set -euo pipefail
+
+            # --- CANCELLATION TRAP ---
+            # Define the function to be called on a TERM signal
+            cancel_deployment() {
+              echo " "
+              echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "🛑 CAUGHT CANCEL SIGNAL (SIGTERM) 🛑"
+              echo "Attempting to find and cancel the 'In Progress' Salesforce deployment..."
+              echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              
+              # Use the 'target' alias which is set-default by jwt-auth
+              # Query for the most recent "In Progress" deploy ID.
+              # We add '|| true' so the script doesn't exit if jq fails or no job is found.
+              JOB_ID=$(sf project deploy list --target-org target --status InProgress --limit 1 --json | jq -r '.result[0].id') || true
+
+              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+                echo "Found 'In Progress' Job ID: $JOB_ID"
+                echo "Sending cancel command..."
+                sf project deploy cancel --job-id "$JOB_ID" --no-prompt --target-org target
+                echo "✅ Cancel command sent."
+              else
+                echo "⚠️ No 'In Progress' deployment found to cancel."
+              fi
+              
+              # Exit with a non-zero code to ensure CircleCI knows it was canceled
+              exit 130
+            }
+
+            # Set the trap. This catches the signal CircleCI sends when 'Cancel' is pressed.
+            trap cancel_deployment TERM
+            # --- END CANCELLATION TRAP ---
+
+            # --- Your original script continues below ---
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
@@ -359,6 +392,7 @@ commands:
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
 
+              # NOTE: The script will 'wait' here. If canceled, the trap runs.
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
@@ -378,6 +412,7 @@ commands:
             if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
               echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
 
+              # NOTE: The script will 'wait' here. If canceled, the trap runs.
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
@@ -391,6 +426,8 @@ commands:
 
             echo "📦 Proceeding with NoTestRun."
 
+            # NOTE: The script will 'wait' here. If canceled, the trap runs.
+            # *** Correction: Changed package.css to package.xml ***
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
