@@ -309,44 +309,44 @@ commands:
             DEPLOY_LOG=deploy.log
 
             # --- CANCELLATION TRAP ---
-            # Define the function to be called on a TERM signal
             cancel_deployment() {
-              # Try to extract Deploy ID from the streaming log first (quiet)
-              JOB_ID=""
-              if [ -f "$DEPLOY_LOG" ]; then
-                JOB_ID=$(grep -m1 -oE 'Deploy ID: [A-Za-z0-9_]+' "$DEPLOY_LOG" | awk '{print $3}' || true)
-              fi
+              # silent debug marker (goes only to deploy.log)
+              printf '%s\n' "TRAP_TRIGGERED: $(date -u +%FT%T) SIGNAL" >> "$DEPLOY_LOG" 2>/dev/null || true
 
-              # Fallback: query sf for in-progress deploy if log didn't contain an ID
-              if [ -z "$JOB_ID" ]; then
+              # Try to extract Deploy ID from the streaming log first
+              JOB_ID=$(grep -m1 -oE 'Deploy ID: [A-Za-z0-9_]+' "$DEPLOY_LOG" 2>/dev/null | awk '{print $3}' || true)
+
+              # Fallback: query sf for in-progress deploy (quiet)
+              if [ -z "$JOB_ID" ] && command -v jq >/dev/null 2>&1; then
                 JOB_ID=$(sf project deploy list --target-org target --status InProgress --limit 1 --json 2>/dev/null | jq -r '.result[0].id' 2>/dev/null) || true
                 [ "$JOB_ID" = "null" ] && JOB_ID=""
               fi
 
+              # Kill local sf process if still running (so wait returns)
+              if [ -n "${DEPLOY_PID:-}" ] && kill -0 "$DEPLOY_PID" >/dev/null 2>&1; then
+                kill -TERM "$DEPLOY_PID" >/dev/null 2>&1 || true
+              fi
+
+              # Cancel remote deploy quietly
               if [ -n "$JOB_ID" ]; then
-                # Cancel the deployment quietly; suppress CLI output so we don't change the view
                 sf project deploy cancel --job-id "$JOB_ID" --no-prompt --target-org target >/dev/null 2>&1 || true
               fi
 
-              # Exit with code 130 to indicate cancellation to CI
               exit 130
             }
 
-            # Set the trap. This catches the signal CircleCI sends when 'Cancel' is pressed.
-            trap cancel_deployment TERM
+            # Catch both TERM and INT (CircleCI sends TERM; handle INT while debugging locally)
+            trap cancel_deployment TERM INT
             # --- END CANCELLATION TRAP ---
 
             # Helper to run deploy commands while streaming output to console + log
             run_deploy() {
-              # $1 ... test-level (e.g. RunSpecifiedTests / RunLocalTests / NoTestRun)
-              # $2 ... additional args (e.g. --tests MyTest)
               TEST_LEVEL_ARG="$1"
               ADDITIONAL_ARGS="$2"
 
-              # Use bash -lc so tokenized args are expanded, pipe through tee to preserve output and capture Deploy ID
-              ( set -o pipefail; bash -lc "sf project deploy start --manifest package.xml --target-org target --test-level $TEST_LEVEL_ARG $ADDITIONAL_ARGS --wait 360 --ignore-conflicts" ) 2>&1 | tee "$DEPLOY_LOG" &
+              # use stdbuf to avoid buffering so Deploy ID appears promptly in deploy.log
+              ( set -o pipefail; bash -lc "stdbuf -oL sf project deploy start --manifest package.xml --target-org target --test-level $TEST_LEVEL_ARG $ADDITIONAL_ARGS --wait 360 --ignore-conflicts" ) 2>&1 | tee "$DEPLOY_LOG" &
               DEPLOY_PID=$!
-              # Wait for the backgrounded deploy process; allow non-zero exit so cancel flows as expected
               wait $DEPLOY_PID || true
               return 0
             }
@@ -506,7 +506,7 @@ jobs:
 
 
 # ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT) 
+# WORKFLOWS (BRANCH → ENVIRONMENT)
 # ============================================================
 workflows:
   version: 2
