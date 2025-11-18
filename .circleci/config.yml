@@ -471,6 +471,96 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
 
+# ============================================================
+# JOBS PER ORG
+# ============================================================
+
+# -----------------------------
+# INTQA (already generated)
+# -----------------------------
+
+  deploy-intqa:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+  cancel-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - sf-cancel-deploy
+
+
+  # -----------------------------
+  # STAGING UAT
+  # -----------------------------
+
+  deploy-staging:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+  cancel-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - sf-cancel-deploy
+
+
+  # -----------------------------
+  # PRODUCTION
+  # -----------------------------
+
+  deploy-main:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+  cancel-main:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - sf-cancel-deploy
+
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
@@ -478,32 +568,53 @@ jobs:
 workflows:
   version: 2
 
-  build-test-deploy:
+  intqa-deploy:
     jobs:
-
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
+      - cancel-intqa:
+          requires:
+            - deploy-intqa:
+                - canceled
+          context: sf-intqa
+          filters:
+            branches:
+              only: BRInt
 
+  staging-deploy:
+    jobs:
       - deploy-staging:
           context: sf-staging
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRStaging
-            tags:
-              ignore: /.*/
+      - cancel-staging:
+          requires:
+            - deploy-staging:
+                - canceled
+          context: sf-staging
+          filters:
+            branches:
+              only: BRStaging
 
+  prod-deploy:
+    jobs:
       - deploy-main:
           context: sf-prod
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: main
-            tags:
-              ignore: /.*/
+      - cancel-main:
+          requires:
+            - deploy-main:
+                - canceled
+          context: sf-prod
+          filters:
+            branches:
+              only: main
