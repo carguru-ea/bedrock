@@ -16,7 +16,6 @@ commands:
       - restore_cache:
           keys:
             - sf-cli-cache-v1
-
       - run:
           name: Install Salesforce CLI and Java
           command: |
@@ -25,7 +24,7 @@ commands:
             fi
 
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-            
+
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
 
@@ -65,7 +64,7 @@ commands:
 
 
   # ----------------------------------------------------------
-  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
+  # Tag-Based Deployment With Delta + Manifest (NO TESTS)
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -142,10 +141,10 @@ commands:
               while IFS= read -r file; do
                 case "$file" in
                   *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
-                      if [ -f "$file" ]; then
-                        echo "$file" >> files.txt
-                      fi
-                      ;;
+                    if [ -f "$file" ]; then
+                      echo "$file" >> files.txt
+                    fi
+                    ;;
                 esac
               done < temp_files.txt
             fi
@@ -167,96 +166,17 @@ commands:
 
 
       # ------------------------------------------------------
-      # Identify dependent test classes
+      # Deploy Metadata (NO TESTS)
       # ------------------------------------------------------
       - run:
-          name: Identify Dependent Test Classes
+          name: Deploy Metadata (NoTestRun)
           command: |
-            set -euo pipefail
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
-
-            if [ ! -s changed_classes.txt ]; then
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
-            if [ -s changed_test_classes.txt ]; then
-              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
-              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
-            classList="'${classList}'"
-
-            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
-
-            sf data query \
-              --query "$soqlClasses" \
-              --use-tooling-api \
-              --target-org target \
-              --json > classIds.json
-
-            if command -v jq >/dev/null 2>&1; then
-              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
-            else
-              CLASS_IDS=""
-            fi
-
-            if [ -z "$CLASS_IDS" ]; then
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
-            classIdList="'${classIdList}'"
-
-            soqlDep="SELECT MetadataComponentName
-                     FROM MetadataComponentDependency
-                     WHERE RefMetadataComponentType = 'ApexClass'
-                     AND RefMetadataComponentId IN (${classIdList})
-                     AND MetadataComponentType = 'ApexClass'"
-
-            sf data query \
-              --query "$soqlDep" \
-              --use-tooling-api \
-              --target-org target \
-              --json > dependentTests.json || {
-                echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-                exit 0
-              }
-
-            if command -v jq >/dev/null 2>&1; then
-              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
-            else
-              TEST_CLASSES=""
-            fi
-
-            echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-
-
-      # ------------------------------------------------------
-      # Deploy Metadata (Dynamic Tests)
-      # ------------------------------------------------------
-      - run:
-          name: Deploy Metadata (Dynamic Tests)
-          command: |
-            # Prevent CircleCI cancellation (SIGINT) from killing the job early
-            trap 'echo "⚠️ Interrupt signal received — continuing cleanup..."; exit 0' INT TERM
-
-            set -eo pipefail
-
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta changes — full deploy with tests."
+              echo "⚠️ No delta changes — full deploy (NoTestRun)."
 
               find force-app/main/default -type f \
                 \( -name "*.cls" \
@@ -272,46 +192,14 @@ commands:
               if [ -s files.txt ]; then
                 mapfile -t manifest_paths < files.txt
                 sf project generate manifest -p "${manifest_paths[@]}"
-                echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
-                export TEST_LEVEL=RunLocalTests
               else
+                echo "⚠️ No metadata files found. Nothing to deploy."
                 echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
                 exit 0
               fi
             fi
 
-            mkdir -p test-results
-
-            if [ -n "${TEST_CLASSES}" ]; then
-              TEST_ARGS=""
-              for t in $TEST_CLASSES; do
-                TEST_ARGS="$TEST_ARGS --tests $t"
-              done
-
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunSpecifiedTests \
-                $TEST_ARGS \
-                --wait 360 \
-                --ignore-conflicts
-
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
-
-            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --ignore-conflicts \
-                --wait 360
-
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
-
+            echo "🚀 Deploying metadata with NoTestRun..."
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
@@ -344,10 +232,11 @@ commands:
 
 
 # ============================================================
-#  JOBS PER ENVIRONMENT
+# JOBS
 # ============================================================
 jobs:
 
+  # --------------------- INTQA ------------------------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -362,6 +251,52 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+  run-tests-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - run:
+          name: Run Apex Tests (INTQA)
+          command: |
+            echo "🧪 Running ALL Apex tests in INTQA..."
+            sf apex run test --all --target-org target --wait 360
+
+  cancel-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - run:
+          name: Cancel Deployment (INTQA)
+          command: |
+            echo "🛑 Cancel requested — polling for active INTQA deployment..."
+
+            for i in {1..6}; do
+              DEPLOY_INFO=$(sf project deploy list --target-org target --json || echo "")
+              JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | map(select(.state=="Queued" or .state=="InProgress" or .state=="Pending")) | .[0].id')
+
+              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+                echo "🚫 Canceling deployment $JOB_ID in INTQA..."
+                sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+                echo "✅ Cancel request sent for $JOB_ID"
+                exit 0
+              fi
+
+              echo "⏳ No active deploy yet… retrying in 5s ($i/6)"
+              sleep 5
+            done
+
+            echo "⚠️ No active Salesforce deployment detected in INTQA after polling. Nothing to cancel."
+            exit 0
+
+
+  # --------------------- STAGINGUAT -------------------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -376,6 +311,52 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+  run-tests-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - run:
+          name: Run Apex Tests (STAGINGUAT)
+          command: |
+            echo "🧪 Running ALL Apex tests in STAGINGUAT..."
+            sf apex run test --all --target-org target --wait 360
+
+  cancel-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - run:
+          name: Cancel Deployment (STAGINGUAT)
+          command: |
+            echo "🛑 Cancel requested — polling for active STAGINGUAT deployment..."
+
+            for i in {1..6}; do
+              DEPLOY_INFO=$(sf project deploy list --target-org target --json || echo "")
+              JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | map(select(.state=="Queued" or .state=="InProgress" or .state=="Pending")) | .[0].id')
+
+              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+                echo "🚫 Canceling deployment $JOB_ID in STAGINGUAT..."
+                sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+                echo "✅ Cancel request sent for $JOB_ID"
+                exit 0
+              fi
+
+              echo "⏳ No active deploy yet… retrying in 5s ($i/6)"
+              sleep 5
+            done
+
+            echo "⚠️ No active Salesforce deployment detected in STAGINGUAT after polling. Nothing to cancel."
+            exit 0
+
+
+  # --------------------- PROD -------------------------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -390,72 +371,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-  # ============================================================
-  #  CANCEL JOBS (environment matched) - FIXED VERSION 
-  # ============================================================
-
-  cancel-intqa:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - run:
-          name: Cancel Deployment (INTQA)
-          command: |
-            echo "🛑 Cancel requested — polling for active Salesforce deployment..."
-
-            # Poll for up to 30 seconds
-            for i in {1..6}; do
-              DEPLOY_INFO=$(sf project deploy list --target-org target --json || echo "")
-              JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | map(select(.state == "InProgress" or .state == "Pending" or .state == "Queued")) | .[0].id')
-
-              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
-                echo "🛑 Found active deployment: $JOB_ID — cancelling..."
-                sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
-                echo "✅ Deployment $JOB_ID cancelled successfully."
-                exit 0
-              fi
-
-              echo "⏳ No active deploy yet… retrying in 5s ($i/6)"
-              sleep 5
-            done
-
-            echo "⚠️ No active Salesforce deployment detected after polling. Nothing to cancel."
-            exit 0
-
-
-  cancel-staging:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - run:
-          name: Cancel Deployment (STAGINGUAT)
-          command: |
-            echo "🛑 Cancel requested — cancelling STAGING deployment..."
-
-            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
-            echo "🔎 Deployment list:"
-            echo "$DEPLOY_INFO"
-
-            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
-
-            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-              echo "⚠️ No active deploy running."
-              exit 0
-            fi
-
-            echo "🛑 Cancelling deployment ID: $JOB_ID"
-            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
-            echo "✅ Cancel request sent for deployment $JOB_ID"
-
-  cancel-prod:
+  run-tests-main:
     docker:
       - image: cimg/node:20.10
     steps:
@@ -464,24 +380,40 @@ jobs:
       - jwt-auth:
           target_env: PROD
       - run:
+          name: Run Apex Tests (PROD)
+          command: |
+            echo "🧪 Running ALL Apex tests in PROD..."
+            sf apex run test --all --target-org target --wait 360
+
+  cancel-prod:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - run:
           name: Cancel Deployment (PROD)
           command: |
-            echo "🛑 Cancel requested — cancelling PROD deployment..."
+            echo "🛑 Cancel requested — polling for active PROD deployment..."
 
-            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
-            echo "🔎 Deployment list:"
-            echo "$DEPLOY_INFO"
+            for i in {1..6}; do
+              DEPLOY_INFO=$(sf project deploy list --target-org target --json || echo "")
+              JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | map(select(.state=="Queued" or .state=="InProgress" or .state=="Pending")) | .[0].id')
 
-            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
+              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+                echo "🚫 Canceling deployment $JOB_ID in PROD..."
+                sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+                echo "✅ Cancel request sent for $JOB_ID"
+                exit 0
+              fi
 
-            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-              echo "⚠️ No active deploy running."
-              exit 0
-            fi
+              echo "⏳ No active deploy yet… retrying in 5s ($i/6)"
+              sleep 5
+            done
 
-            echo "🛑 Cancelling deployment ID: $JOB_ID"
-            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
-            echo "✅ Cancel request sent for deployment $JOB_ID"
+            echo "⚠️ No active Salesforce deployment detected in PROD after polling. Nothing to cancel."
+            exit 0
 
 
 # ============================================================
@@ -493,6 +425,7 @@ workflows:
   build-test-deploy:
     jobs:
 
+      # ----------------- INTQA (BRInt) ----------------------
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: << pipeline.git.branch >>
@@ -502,6 +435,27 @@ workflows:
             tags:
               ignore: /.*/
 
+      - run-tests-intqa:
+          context: sf-intqa
+          requires:
+            - deploy-intqa
+          filters:
+            branches:
+              only: BRInt
+            tags:
+              ignore: /.*/
+
+      - cancel-intqa:
+          context: sf-intqa
+          requires:
+            - deploy-intqa: canceled
+          filters:
+            branches:
+              only: BRInt
+            tags:
+              ignore: /.*/
+
+      # ----------------- STAGING (BRStaging) ----------------
       - deploy-staging:
           context: sf-staging
           tag_prefix: << pipeline.git.branch >>
@@ -511,6 +465,27 @@ workflows:
             tags:
               ignore: /.*/
 
+      - run-tests-staging:
+          context: sf-staging
+          requires:
+            - deploy-staging
+          filters:
+            branches:
+              only: BRStaging
+            tags:
+              ignore: /.*/
+
+      - cancel-staging:
+          context: sf-staging
+          requires:
+            - deploy-staging: canceled
+          filters:
+            branches:
+              only: BRStaging
+            tags:
+              ignore: /.*/
+
+      # ----------------- PROD (main) ------------------------
       - deploy-main:
           context: sf-prod
           tag_prefix: << pipeline.git.branch >>
@@ -520,21 +495,22 @@ workflows:
             tags:
               ignore: /.*/
 
-      # =======================================================
-      # CANCEL JOBS EXECUTE ONLY IF THEIR DEPLOY JOB IS CANCELED
-      # =======================================================
-
-      - cancel-intqa:
+      - run-tests-main:
+          context: sf-prod
           requires:
-            - deploy-intqa: canceled
-          context: sf-intqa
-
-      - cancel-staging:
-          requires:
-            - deploy-staging: canceled
-          context: sf-staging
+            - deploy-main
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
 
       - cancel-prod:
+          context: sf-prod
           requires:
             - deploy-main: canceled
-          context: sf-prod
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
