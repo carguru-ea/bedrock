@@ -306,25 +306,50 @@ commands:
           command: |
             set -euo pipefail
 
+            DEPLOY_LOG=deploy.log
+
             # --- CANCELLATION TRAP ---
             # Define the function to be called on a TERM signal
             cancel_deployment() {
-              # Attempt to find the most recent "In Progress" deploy ID.
-              # Keep this quiet so we don't alter the deployment output view.
-              JOB_ID=$(sf project deploy list --target-org target --status InProgress --limit 1 --json 2>/dev/null | jq -r '.result[0].id' 2>/dev/null) || true
+              # Try to extract Deploy ID from the streaming log first (quiet)
+              JOB_ID=""
+              if [ -f "$DEPLOY_LOG" ]; then
+                JOB_ID=$(grep -m1 -oE 'Deploy ID: [A-Za-z0-9_]+' "$DEPLOY_LOG" | awk '{print $3}' || true)
+              fi
 
-              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
-                # Cancel the deployment quietly; suppress CLI output
+              # Fallback: query sf for in-progress deploy if log didn't contain an ID
+              if [ -z "$JOB_ID" ]; then
+                JOB_ID=$(sf project deploy list --target-org target --status InProgress --limit 1 --json 2>/dev/null | jq -r '.result[0].id' 2>/dev/null) || true
+                [ "$JOB_ID" = "null" ] && JOB_ID=""
+              fi
+
+              if [ -n "$JOB_ID" ]; then
+                # Cancel the deployment quietly; suppress CLI output so we don't change the view
                 sf project deploy cancel --job-id "$JOB_ID" --no-prompt --target-org target >/dev/null 2>&1 || true
               fi
 
-              # Exit with code 130 to indicate cancellation
+              # Exit with code 130 to indicate cancellation to CI
               exit 130
             }
 
             # Set the trap. This catches the signal CircleCI sends when 'Cancel' is pressed.
             trap cancel_deployment TERM
             # --- END CANCELLATION TRAP ---
+
+            # Helper to run deploy commands while streaming output to console + log
+            run_deploy() {
+              # $1 ... test-level (e.g. RunSpecifiedTests / RunLocalTests / NoTestRun)
+              # $2 ... additional args (e.g. --tests MyTest)
+              TEST_LEVEL_ARG="$1"
+              ADDITIONAL_ARGS="$2"
+
+              # Use bash -lc so tokenized args are expanded, pipe through tee to preserve output and capture Deploy ID
+              ( set -o pipefail; bash -lc "sf project deploy start --manifest package.xml --target-org target --test-level $TEST_LEVEL_ARG $ADDITIONAL_ARGS --wait 360 --ignore-conflicts" ) 2>&1 | tee "$DEPLOY_LOG" &
+              DEPLOY_PID=$!
+              # Wait for the backgrounded deploy process; allow non-zero exit so cancel flows as expected
+              wait $DEPLOY_PID || true
+              return 0
+            }
 
             # --- Your original script continues below ---
             source $BASH_ENV
@@ -381,14 +406,8 @@ commands:
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
 
-              # NOTE: The script will 'wait' here. If canceled, the trap runs.
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunSpecifiedTests \
-                $TEST_ARGS \
-                --wait 360 \
-                --ignore-conflicts 
+              # Start deploy in background + tee; trap will cancel remote job using deploy.log
+              run_deploy "RunSpecifiedTests" "$TEST_ARGS"
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -401,13 +420,7 @@ commands:
             if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
               echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
 
-              # NOTE: The script will 'wait' here. If canceled, the trap runs.
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --ignore-conflicts \
-                --wait 360 
+              run_deploy "RunLocalTests" ""
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -415,14 +428,8 @@ commands:
 
             echo "📦 Proceeding with NoTestRun."
 
-            # NOTE: The script will 'wait' here. If canceled, the trap runs.
-            # *** Correction: Changed package.css to package.xml ***
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level NoTestRun \
-              --ignore-conflicts \
-              --wait 360 
+            # Start NoTestRun deploy; output still visible and cancel handled via trap
+            run_deploy "NoTestRun" ""
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
