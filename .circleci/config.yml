@@ -246,7 +246,11 @@ commands:
       - run:
           name: Deploy Metadata (Dynamic Tests)
           command: |
-            set -euo pipefail
+            # Prevent CircleCI cancellation (SIGINT) from killing the job early
+            trap 'echo "⚠️ Interrupt signal received — continuing cleanup..."; exit 0' INT TERM
+
+            set -eo pipefail
+
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
