@@ -305,53 +305,6 @@ commands:
           name: Deploy Metadata (Dynamic Tests)
           command: |
             set -euo pipefail
-
-            DEPLOY_LOG=deploy.log
-
-            # --- CANCELLATION TRAP ---
-            cancel_deployment() {
-              # silent debug marker (goes only to deploy.log)
-              printf '%s\n' "TRAP_TRIGGERED: $(date -u +%FT%T) SIGNAL" >> "$DEPLOY_LOG" 2>/dev/null || true
-
-              # Try to extract Deploy ID from the streaming log first
-              JOB_ID=$(grep -m1 -oE 'Deploy ID: [A-Za-z0-9_]+' "$DEPLOY_LOG" 2>/dev/null | awk '{print $3}' || true)
-
-              # Fallback: query sf for in-progress deploy (quiet)
-              if [ -z "$JOB_ID" ] && command -v jq >/dev/null 2>&1; then
-                JOB_ID=$(sf project deploy list --target-org target --status InProgress --limit 1 --json 2>/dev/null | jq -r '.result[0].id' 2>/dev/null) || true
-                [ "$JOB_ID" = "null" ] && JOB_ID=""
-              fi
-
-              # Kill local sf process if still running (so wait returns)
-              if [ -n "${DEPLOY_PID:-}" ] && kill -0 "$DEPLOY_PID" >/dev/null 2>&1; then
-                kill -TERM "$DEPLOY_PID" >/dev/null 2>&1 || true
-              fi
-
-              # Cancel remote deploy quietly
-              if [ -n "$JOB_ID" ]; then
-                sf project deploy cancel --job-id "$JOB_ID" --no-prompt --target-org target >/dev/null 2>&1 || true
-              fi
-
-              exit 130
-            }
-
-            # Catch both TERM and INT (CircleCI sends TERM; handle INT while debugging locally)
-            trap cancel_deployment TERM INT
-            # --- END CANCELLATION TRAP ---
-
-            # Helper to run deploy commands while streaming output to console + log
-            run_deploy() {
-              TEST_LEVEL_ARG="$1"
-              ADDITIONAL_ARGS="$2"
-
-              # use stdbuf to avoid buffering so Deploy ID appears promptly in deploy.log
-              ( set -o pipefail; bash -lc "stdbuf -oL sf project deploy start --manifest package.xml --target-org target --test-level $TEST_LEVEL_ARG $ADDITIONAL_ARGS --wait 360 --ignore-conflicts" ) 2>&1 | tee "$DEPLOY_LOG" &
-              DEPLOY_PID=$!
-              wait $DEPLOY_PID || true
-              return 0
-            }
-
-            # --- Your original script continues below ---
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
@@ -406,8 +359,13 @@ commands:
 
               echo "🔥 Final TEST_ARGS: $TEST_ARGS"
 
-              # Start deploy in background + tee; trap will cancel remote job using deploy.log
-              run_deploy "RunSpecifiedTests" "$TEST_ARGS"
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunSpecifiedTests \
+                $TEST_ARGS \
+                --wait 360 \
+                --ignore-conflicts 
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -420,7 +378,12 @@ commands:
             if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
               echo "📦 Running all local tests (RunLocalTests) because full deploy requested."
 
-              run_deploy "RunLocalTests" ""
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --ignore-conflicts \
+                --wait 360 
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -428,8 +391,12 @@ commands:
 
             echo "📦 Proceeding with NoTestRun."
 
-            # Start NoTestRun deploy; output still visible and cancel handled via trap
-            run_deploy "NoTestRun" ""
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level NoTestRun \
+              --ignore-conflicts \
+              --wait 360 
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
