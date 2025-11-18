@@ -405,22 +405,27 @@ jobs:
       - run:
           name: Cancel Deployment (INTQA)
           command: |
-            echo "🛑 Cancel requested — cancelling INTQA deployment..."
+            echo "🛑 Cancel requested — polling for active Salesforce deployment..."
 
-            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
-            echo "🔎 Deployment list:"
-            echo "$DEPLOY_INFO"
+            # Poll for up to 30 seconds
+            for i in {1..6}; do
+              DEPLOY_INFO=$(sf project deploy list --target-org target --json || echo "")
+              JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | map(select(.state == "InProgress" or .state == "Pending" or .state == "Queued")) | .[0].id')
 
-            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
+              if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ]; then
+                echo "🛑 Found active deployment: $JOB_ID — cancelling..."
+                sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+                echo "✅ Deployment $JOB_ID cancelled successfully."
+                exit 0
+              fi
 
-            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-              echo "⚠️ No active deploy running."
-              exit 0
-            fi
+              echo "⏳ No active deploy yet… retrying in 5s ($i/6)"
+              sleep 5
+            done
 
-            echo "🛑 Cancelling deployment ID: $JOB_ID"
-            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
-            echo "✅ Cancel request sent for deployment $JOB_ID"
+            echo "⚠️ No active Salesforce deployment detected after polling. Nothing to cancel."
+            exit 0
+
 
   cancel-staging:
     docker:
