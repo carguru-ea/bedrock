@@ -64,7 +64,32 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
+  # Salesforce Deployment Cancel Command (for cancel-* jobs)
+  # ----------------------------------------------------------
+  sf-cancel-deploy:
+    steps:
+      - run:
+          name: Attempt to Cancel Active Salesforce Deployment
+          command: |
+            echo "🔎 Checking for active Salesforce deployment ID..."
+            if command -v jq >/dev/null 2>&1; then
+              DEPLOY_ID=$(sf project deploy report --json 2>/dev/null | jq -r '.result.id // empty')
+            else
+              echo "⚠️ jq not found; cannot parse deploy id. Skipping cancel."
+              DEPLOY_ID=""
+            fi
+
+            if [ -n "$DEPLOY_ID" ]; then
+              echo "❗ Canceling Salesforce deployment: $DEPLOY_ID"
+              sf project deploy cancel --job-id "$DEPLOY_ID" --target-org target || true
+              echo "✔ Salesforce deployment cancel request sent."
+            else
+              echo "ℹ No active deployment found to cancel."
+            fi
+
+  # ----------------------------------------------------------
   # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
+  # AND cancel-safe behavior (trap on SIGTERM/SIGINT)
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -105,9 +130,8 @@ commands:
             echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
             echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
 
-
       # ------------------------------------------------------
-      # Build package.xml (metadata-root aware)
+      # Build package.xml (metadata-root aware)  ✅ DELTA LOGIC
       # ------------------------------------------------------
       - run:
           name: Build Package Manifest
@@ -175,10 +199,8 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
-
       # ------------------------------------------------------
-      # Identify dependent test classes (ID-based + full debug)
+      # Identify dependent test classes  ✅ METADATACOMPONENTDEPENDENCY
       # ------------------------------------------------------
       - run:
           name: Identify Dependent Test Classes
@@ -296,18 +318,37 @@ commands:
               echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
             fi
 
-
-
       # ------------------------------------------------------
       # Deploy with dynamic / conditional test execution 
+      # + cancel-safe trap
       # ------------------------------------------------------
       - run:
-          name: Deploy Metadata (Dynamic Tests)
+          name: Deploy Metadata (Dynamic Tests, Cancel-Safe)
           command: |
             set -euo pipefail
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
+
+            # -------- Cancel-safe trap --------
+            cancel_sf_deploy() {
+              echo "🛑 Caught termination signal — attempting to cancel Salesforce deployment..."
+              if command -v jq >/dev/null 2>&1; then
+                DEPLOY_ID=$(sf project deploy report --json 2>/dev/null | jq -r '.result.id // empty')
+              else
+                echo "⚠️ jq not found; cannot parse deploy id in trap."
+                DEPLOY_ID=""
+              fi
+
+              if [ -n "$DEPLOY_ID" ]; then
+                echo "❗ Sending cancel for deployment: $DEPLOY_ID"
+                sf project deploy cancel --job-id "$DEPLOY_ID" --target-org target || true
+              else
+                echo "ℹ No active deployment found to cancel in trap."
+              fi
+            }
+
+            trap cancel_sf_deploy TERM INT
 
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "⚠️ No delta changes detected — performing full scan and deploying all components with full tests."
@@ -327,10 +368,8 @@ commands:
               if [ -s files.txt ]; then
                 mapfile -t manifest_paths < files.txt
                 sf project generate manifest -p "${manifest_paths[@]}"
-                # Persist for later steps and for subsequent commands in this shell
                 echo "export CHANGES_FOUND=true" >> $BASH_ENV
                 echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
-                # Also export into the current shell so the rest of this run uses it immediately
                 export CHANGES_FOUND=true
                 export TEST_LEVEL=RunLocalTests
                 echo "📦 Generated full package.xml for full deploy:" 
@@ -400,7 +439,6 @@ commands:
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
-
       # ------------------------------------------------------
       # Tag creation
       # ------------------------------------------------------
@@ -411,7 +449,7 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
+            if [ "${DEPLOYMENT_SUCCESS:-false}" = "true" ]; then
               NEW_REF=$((CURRENT_REF + 1))
               NEW_TAG="$TAG_PREFIX-$NEW_REF"
 
@@ -419,66 +457,18 @@ commands:
               git config user.name "CircleCI"
               git tag "$NEW_TAG"
               git push origin "$NEW_TAG"
+            else
+              echo "ℹ Skipping tag creation — deployment not marked successful."
             fi
-
-
 
 # ============================================================
 # JOBS PER ORG
 # ============================================================
 jobs:
 
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-
-# ============================================================
-# JOBS PER ORG
-# ============================================================
-
-# -----------------------------
-# INTQA (already generated)
-# -----------------------------
-
+  # -----------------------------
+  # INTQA
+  # -----------------------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -503,11 +493,9 @@ jobs:
           target_env: INTQA
       - sf-cancel-deploy
 
-
   # -----------------------------
   # STAGING UAT
   # -----------------------------
-
   deploy-staging:
     parameters:
       tag_prefix:
@@ -532,11 +520,9 @@ jobs:
           target_env: STAGINGUAT
       - sf-cancel-deploy
 
-
   # -----------------------------
   # PRODUCTION
   # -----------------------------
-
   deploy-main:
     parameters:
       tag_prefix:
@@ -560,7 +546,6 @@ jobs:
       - jwt-auth:
           target_env: PROD
       - sf-cancel-deploy
-
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
