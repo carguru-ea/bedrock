@@ -3,7 +3,6 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-
 # ============================================================
 # COMMANDS
 # ============================================================
@@ -39,7 +38,6 @@ commands:
             - /usr/local/lib/node_modules
             - /usr/local/bin
 
-
   # ----------------------------------------------------------
   # JWT Authentication
   # ----------------------------------------------------------
@@ -66,9 +64,8 @@ commands:
               --set-default
 
 
-
   # ----------------------------------------------------------
-  # DEPLOY-WITH-TAGS (YOUR FULL ORIGINAL LOGIC)
+  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -76,9 +73,9 @@ commands:
         type: string
     steps:
 
-      # -------------------------------------------------------
-      # Find Most Recent Tag
-      # -------------------------------------------------------
+      # ------------------------------------------------------
+      # Identify most recent tag
+      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -110,9 +107,9 @@ commands:
             echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
 
 
-      # -------------------------------------------------------
-      # Build Manifest (Full + Delta Logic)
-      # -------------------------------------------------------
+      # ------------------------------------------------------
+      # Build package.xml (metadata-root aware)
+      # ------------------------------------------------------
       - run:
           name: Build Package Manifest
           command: |
@@ -120,39 +117,58 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "🔍 Building deployable metadata file list..."
+
             if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "🚀 First deployment — full scan"
+              echo "🚀 First deployment — scanning entire force-app for metadata roots"
+
               find force-app/main/default -type f \
-                \( -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
-                -o -name "*.component" -o -name "*.cmp" -o -name "*.app" \
-                -o -name "*-meta.xml" -o -name "*.js-meta.xml" \) > files.txt || true
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
             else
-              git diff --name-only --relative "$CURRENT_TAG" HEAD | grep '^force-app/' > temp_files.txt || true
+              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
+
+              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
               > files.txt
+
               while IFS= read -r file; do
                 case "$file" in
                   *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
-                    [ -f "$file" ] && echo "$file" >> files.txt
-                  ;;
+                      if [ -f "$file" ]; then
+                        echo "$file" >> files.txt
+                      fi
+                      ;;
                 esac
               done < temp_files.txt
             fi
 
-            echo "👉 Final file list:"
-            cat files.txt || true
+            echo "👉 Final metadata root list:"
+            cat files.txt || echo "(none)"
 
             if [ -s files.txt ]; then
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
+
+              echo "📦 Generated package.xml:"
+              cat package.xml
             else
+              echo "⚠️ No deployable metadata roots found."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
 
-      # -------------------------------------------------------
-      # Dependent Tests
-      # -------------------------------------------------------
+      # ------------------------------------------------------
+      # Identify dependent test classes
+      # ------------------------------------------------------
       - run:
           name: Identify Dependent Test Classes
           command: |
@@ -178,10 +194,19 @@ commands:
             classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
             classList="'${classList}'"
 
-            sf data query --query "SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})" \
-              --use-tooling-api --target-org target --json > classIds.json
+            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
 
-            CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
+            sf data query \
+              --query "$soqlClasses" \
+              --use-tooling-api \
+              --target-org target \
+              --json > classIds.json
+
+            if command -v jq >/dev/null 2>&1; then
+              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
+            else
+              CLASS_IDS=""
+            fi
 
             if [ -z "$CLASS_IDS" ]; then
               echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
@@ -191,17 +216,33 @@ commands:
             classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
             classIdList="'${classIdList}'"
 
-            sf data query --query "SELECT MetadataComponentName FROM MetadataComponentDependency WHERE RefMetadataComponentType='ApexClass' AND RefMetadataComponentId IN (${classIdList}) AND MetadataComponentType='ApexClass'" \
-              --use-tooling-api --target-org target --json > dependentTests.json || true
+            soqlDep="SELECT MetadataComponentName
+                     FROM MetadataComponentDependency
+                     WHERE RefMetadataComponentType = 'ApexClass'
+                     AND RefMetadataComponentId IN (${classIdList})
+                     AND MetadataComponentType = 'ApexClass'"
 
-            TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            sf data query \
+              --query "$soqlDep" \
+              --use-tooling-api \
+              --target-org target \
+              --json > dependentTests.json || {
+                echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+                exit 0
+              }
+
+            if command -v jq >/dev/null 2>&1; then
+              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            else
+              TEST_CLASSES=""
+            fi
+
             echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
 
 
-
-      # -------------------------------------------------------
-      # Deploy Metadata
-      # -------------------------------------------------------
+      # ------------------------------------------------------
+      # Deploy Metadata (Dynamic Tests)
+      # ------------------------------------------------------
       - run:
           name: Deploy Metadata (Dynamic Tests)
           command: |
@@ -210,11 +251,38 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No delta changes — full deploy with tests."
+
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
+              if [ -s files.txt ]; then
+                mapfile -t manifest_paths < files.txt
+                sf project generate manifest -p "${manifest_paths[@]}"
+                echo "export TEST_LEVEL=RunLocalTests" >> $BASH_ENV
+                export TEST_LEVEL=RunLocalTests
+              else
+                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                exit 0
+              fi
+            fi
+
             mkdir -p test-results
 
             if [ -n "${TEST_CLASSES}" ]; then
               TEST_ARGS=""
-              for t in $TEST_CLASSES; do TEST_ARGS="$TEST_ARGS --tests $t"; done
+              for t in $TEST_CLASSES; do
+                TEST_ARGS="$TEST_ARGS --tests $t"
+              done
 
               sf project deploy start \
                 --manifest package.xml \
@@ -222,29 +290,19 @@ commands:
                 --test-level RunSpecifiedTests \
                 $TEST_ARGS \
                 --wait 360 \
-                --ignore-conflicts \
-              || true
+                --ignore-conflicts
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
             fi
 
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              find force-app/main/default -type f \
-                \( -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
-                -o -name "*.component" -o -name "*.cmp" -o -name "*.app" \
-                -o -name "*-meta.xml" -o -name "*.js-meta.xml" \) > files.txt
-
-              mapfile -t manifest_paths < files.txt
-              sf project generate manifest -p "${manifest_paths[@]}"
-
+            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunLocalTests \
-                --wait 360 \
                 --ignore-conflicts \
-              || true
+                --wait 360
 
               echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
               exit 0
@@ -254,17 +312,15 @@ commands:
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
-              --wait 360 \
               --ignore-conflicts \
-            || true
+              --wait 360
 
             echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
 
 
-
-      # -------------------------------------------------------
-      # Tag Creation
-      # -------------------------------------------------------
+      # ------------------------------------------------------
+      # Tag creation
+      # ------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
@@ -283,9 +339,8 @@ commands:
             fi
 
 
-
 # ============================================================
-# DEPLOY JOBS PER ENVIRONMENT
+#  JOBS PER ENVIRONMENT
 # ============================================================
 jobs:
 
@@ -331,69 +386,70 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+  # ============================================================
+  #  CANCEL JOBS (environment matched)
+  # ============================================================
+
+  cancel-intqa:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - run:
+          name: Cancel Deployment (INTQA)
+          command: |
+            echo "⚠️ Cancel requested — cancelling INTQA deployment..."
+            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
+            if [ -z "$JOB_ID" ]; then
+              echo "No active deploy running."
+              exit 0
+            fi
+            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+
+  cancel-staging:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - run:
+          name: Cancel Deployment (STAGINGUAT)
+          command: |
+            echo "⚠️ Cancel requested — cancelling STAGING deployment..."
+            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
+            if [ -z "$JOB_ID" ]; then
+              echo "No active deploy running."
+              exit 0
+            fi
+            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+
+  cancel-prod:
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - run:
+          name: Cancel Deployment (PROD)
+          command: |
+            echo "⚠️ Cancel requested — cancelling PROD deployment..."
+            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
+            if [ -z "$JOB_ID" ]; then
+              echo "No active deploy running."
+              exit 0
+            fi
+            sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
 
 
 # ============================================================
-# AUTO-CONTINUE GATE JOBS (REPLACED APPROVAL JOBS)
-# ============================================================
-auto-continue-intqa:
-  docker:
-    - image: cimg/base:stable
-  steps:
-    - run: echo "↪ INTQA auto-continue triggered"
-
-auto-continue-staging:
-  docker:
-    - image: cimg/base:stable
-  steps:
-    - run: echo "↪ STAGING auto-continue triggered"
-
-auto-continue-main:
-  docker:
-    - image: cimg/base:stable
-  steps:
-    - run: echo "↪ MAIN auto-continue triggered"
-
-
-
-# ============================================================
-# CANCEL SALESFORCE DEPLOY JOB
-# ============================================================
-cancel-salesforce-deploy:
-  parameters:
-    target_env:
-      type: string
-  docker:
-    - image: cimg/node:20.10
-  steps:
-    - checkout
-    - install-tooling
-    - jwt-auth:
-        target_env: << parameters.target_env >>
-
-    - run:
-        name: Cancel Salesforce Deployment (if running)
-        command: |
-          echo "🔍 Checking for active Salesforce deployments…"
-
-          DEPLOY_ID=$(sf deploy list --json | jq -r '.result[] | select(.status=="InProgress") | .id' | head -n 1)
-
-          if [ -z "$DEPLOY_ID" ]; then
-            echo "✅ No active deployments."
-            exit 0
-          fi
-
-          echo "⚠️ Active deployment found: $DEPLOY_ID"
-          echo "🚫 Cancelling…"
-
-          sf deploy cancel --job-id "$DEPLOY_ID" --wait 1 || true
-
-          echo "✔️ Cancellation attempted."
-
-
-
-# ============================================================
-# WORKFLOWS (ENVIRONMENT-AWARE)
+# WORKFLOWS (BRANCH → ENVIRONMENT)
 # ============================================================
 workflows:
   version: 2
@@ -401,73 +457,48 @@ workflows:
   build-test-deploy:
     jobs:
 
-      # ---------------- INTQA ----------------
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
-      - auto-continue-intqa:
-          requires:
-            - deploy-intqa
-          filters:
-            branches:
-              only: BRInt
-
-      - cancel-salesforce-deploy:
-          target_env: INTQA
-          requires:
-            - auto-continue-intqa
-          filters:
-            branches:
-              only: BRInt
-
-
-      # ---------------- STAGING ----------------
       - deploy-staging:
           context: sf-staging
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRStaging
+            tags:
+              ignore: /.*/
 
-      - auto-continue-staging:
-          requires:
-            - deploy-staging
-          filters:
-            branches:
-              only: BRStaging
-
-      - cancel-salesforce-deploy:
-          target_env: STAGINGUAT
-          requires:
-            - auto-continue-staging
-          filters:
-            branches:
-              only: BRStaging
-
-
-      # ---------------- PROD ----------------
       - deploy-main:
           context: sf-prod
           tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: main
+            tags:
+              ignore: /.*/
 
-      - auto-continue-main:
-          requires:
-            - deploy-main
-          filters:
-            branches:
-              only: main
+      # =======================================================
+      # CANCEL JOBS EXECUTE ONLY IF THEIR DEPLOY JOB IS CANCELED
+      # =======================================================
 
-      - cancel-salesforce-deploy:
-          target_env: PROD
+      - cancel-intqa:
           requires:
-            - auto-continue-main
-          filters:
-            branches:
-              only: main
+            - deploy-intqa: canceled
+          context: sf-intqa
+
+      - cancel-staging:
+          requires:
+            - deploy-staging: canceled
+          context: sf-staging
+
+      - cancel-prod:
+          requires:
+            - deploy-main: canceled
+          context: sf-prod
