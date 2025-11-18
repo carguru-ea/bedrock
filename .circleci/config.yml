@@ -387,7 +387,7 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
   # ============================================================
-  #  CANCEL JOBS (environment matched)
+  #  CANCEL JOBS (environment matched) - FIXED VERSION
   # ============================================================
 
   cancel-intqa:
@@ -401,13 +401,22 @@ jobs:
       - run:
           name: Cancel Deployment (INTQA)
           command: |
-            echo "⚠️ Cancel requested — cancelling INTQA deployment..."
-            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
-            if [ -z "$JOB_ID" ]; then
-              echo "No active deploy running."
+            echo "🛑 Cancel requested — cancelling INTQA deployment..."
+
+            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
+            echo "🔎 Deployment list:"
+            echo "$DEPLOY_INFO"
+
+            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
+
+            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+              echo "⚠️ No active deploy running."
               exit 0
             fi
+
+            echo "🛑 Cancelling deployment ID: $JOB_ID"
             sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+            echo "✅ Cancel request sent for deployment $JOB_ID"
 
   cancel-staging:
     docker:
@@ -420,13 +429,22 @@ jobs:
       - run:
           name: Cancel Deployment (STAGINGUAT)
           command: |
-            echo "⚠️ Cancel requested — cancelling STAGING deployment..."
-            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
-            if [ -z "$JOB_ID" ]; then
-              echo "No active deploy running."
+            echo "🛑 Cancel requested — cancelling STAGING deployment..."
+
+            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
+            echo "🔎 Deployment list:"
+            echo "$DEPLOY_INFO"
+
+            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
+
+            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+              echo "⚠️ No active deploy running."
               exit 0
             fi
+
+            echo "🛑 Cancelling deployment ID: $JOB_ID"
             sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+            echo "✅ Cancel request sent for deployment $JOB_ID"
 
   cancel-prod:
     docker:
@@ -439,13 +457,22 @@ jobs:
       - run:
           name: Cancel Deployment (PROD)
           command: |
-            echo "⚠️ Cancel requested — cancelling PROD deployment..."
-            JOB_ID=$(sf project deploy list --target-org target --json | jq -r '.result[0].id' || echo "")
-            if [ -z "$JOB_ID" ]; then
-              echo "No active deploy running."
+            echo "🛑 Cancel requested — cancelling PROD deployment..."
+
+            DEPLOY_INFO=$(sf project deploy list --target-org target --json)
+            echo "🔎 Deployment list:"
+            echo "$DEPLOY_INFO"
+
+            JOB_ID=$(echo "$DEPLOY_INFO" | jq -r '.result | sort_by(.startDate) | reverse | .[0].id')
+
+            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+              echo "⚠️ No active deploy running."
               exit 0
             fi
+
+            echo "🛑 Cancelling deployment ID: $JOB_ID"
             sf project deploy cancel --target-org target --job-id "$JOB_ID" || true
+            echo "✅ Cancel request sent for deployment $JOB_ID"
 
 
 # ============================================================
