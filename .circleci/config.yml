@@ -1,126 +1,32 @@
-version: 2.1
-
-orbs:
-  node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
-
-# ============================================================
-# COMMANDS
-# ============================================================
-commands:
-
-  # ----------------------------------------------------------
-  # Install Salesforce CLI + Java
-  # ----------------------------------------------------------
-  install-tooling:
-    steps:
-      - restore_cache:
-          keys:
-            - sf-cli-cache-v1
-
-      - run:
-          name: Install Salesforce CLI and Java
-          command: |
-            if ! sf --version > /dev/null 2>&1; then
-              sudo npm install -g @salesforce/cli
-            fi
-
-            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-            
-            echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
-            source "$BASH_ENV"
-
-            sf --version
-
-      - save_cache:
-          key: sf-cli-cache-v1
-          paths:
-            - ~/.npm
-            - /usr/local/lib/node_modules
-            - /usr/local/bin
-
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
-  jwt-auth:
-    parameters:
-      target_env:
-        type: string
-    steps:
-      - run:
-          name: Decode JWT key for << parameters.target_env >>
-          command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
-            chmod 600 server.key
-
-      - run:
-          name: Authenticate to Salesforce (<< parameters.target_env >>)
-          command: |
-            sf org login jwt \
-              --username "${SF_USERNAME_<< parameters.target_env >>}" \
-              --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
-              --alias target \
-              --set-default
-
-  # ----------------------------------------------------------
-  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
-  # ----------------------------------------------------------
-  deploy-with-tags:
-    parameters:
-      tag_prefix:
-        type: string
-    steps:
-
-      # ======================================================
-      # FIND MOST RECENT TAG
-      # ======================================================
-      - run:
-          name: Find Most Recent Tag
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            git fetch --tags
-
-            currentRef=0
-            currentTag=""
-
-            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
-
-            if [ -n "$tags" ]; then
-              for tag in $tags; do
-                refNum=$(echo $tag | cut -d '-' -f 2)
-                if [ "$refNum" -gt "$currentRef" ]; then
-                  currentRef=$refNum
-                  currentTag=$tag
-                fi
-              done
-              echo "Latest tag: $currentTag"
-            else
-              echo "No tags found for prefix << parameters.tag_prefix >>"
-            fi
-
-            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
-            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
-            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
-
-      # ======================================================
-      # BUILD PACKAGE MANIFEST
-      # ======================================================
       - run:
           name: Build Package Manifest
           command: |
             source $BASH_ENV
+
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
             echo "🔍 Building deployable metadata file list..."
 
+            # ------------------------------------------------------
+            # NEW: Dynamically detect metadata root from sfdx-project.json
+            # ------------------------------------------------------
+            SRC_DIR=$(jq -r '.packageDirectories[0].path' sfdx-project.json)
+            echo "Detected source directory: $SRC_DIR"
+
+            if [ ! -d "$SRC_DIR" ]; then
+              echo "❌ ERROR: Source directory $SRC_DIR not found."
+              echo "export CHANGES_FOUND=false" >> $BASH_ENV
+              exit 0
+            fi
+
+            # ------------------------------------------------------
+            # Full scan (first deployment)
+            # ------------------------------------------------------
             if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "🚀 First deployment — scanning entire force-app"
-              find force-app/main/default -type f \
+              echo "🚀 First deployment — scanning full metadata root: $SRC_DIR"
+
+              find "$SRC_DIR" -type f \
                 \( -name "*.cls" \
                 -o -name "*.trigger" \
                 -o -name "*.page" \
@@ -132,9 +38,12 @@ commands:
                 \) > files.txt || true
 
             else
+              # ------------------------------------------------------
+              # Delta scan using git diff
+              # ------------------------------------------------------
               echo "🔁 Delta deployment from tag: $CURRENT_TAG"
 
-              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
+              git diff --name-only --relative "$CURRENT_TAG" HEAD | grep "$SRC_DIR" > temp_files.txt || true
 
               > files.txt
 
@@ -147,258 +56,19 @@ commands:
               done < temp_files.txt
             fi
 
-            echo "Final metadata list:"
-            cat files.txt || true
+            echo "📄 Final metadata root list:"
+            cat files.txt || echo "(empty)"
 
+            # ------------------------------------------------------
+            # Build package.xml
+            # ------------------------------------------------------
             if [ -s files.txt ]; then
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
+              echo "📦 Generated package.xml:"
+              cat package.xml
             else
+              echo "⚠️ No deployable metadata found — skipping deploy"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
-
-      # ======================================================
-      # IDENTIFY DEPENDENT TESTS
-      # ======================================================
-      - run:
-          name: Identify Dependent Test Classes
-          command: |
-            set -euo pipefail
-            source $BASH_ENV
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
-
-            if [ ! -s changed_classes.txt ]; then
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
-            if [ -s changed_test_classes.txt ]; then
-              echo "export TEST_CLASSES=\"$(cat changed_test_classes.txt | xargs)\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
-            classList="'${classList}'"
-
-            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
-
-            sf data query --query "$soqlClasses" --use-tooling-api --target-org target --json > classIds.json
-
-            if command -v jq >/dev/null 2>&1; then
-              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
-            fi
-
-            if [ -z "${CLASS_IDS:-}" ]; then
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-
-      # ======================================================
-      # DEPLOY WITH TEXT CAPTURE (NO JSON)
-      # ======================================================
-      - run:
-          name: Deploy Metadata (Dynamic Tests)
-          command: |
-            set +e  # Allow failure
-            source $BASH_ENV
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            DEPLOY_LOG="deploy-output.log"
-
-            echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
-
-            # Construct test arguments
-            TEST_ARGS=""
-            for t in $TEST_CLASSES; do TEST_ARGS="$TEST_ARGS --tests $t"; done
-
-            # Run deploy
-            (
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level ${TEST_LEVEL:-RunSpecifiedTests} \
-                $TEST_ARGS \
-                --ignore-conflicts \
-                --wait 360
-            ) | tee $DEPLOY_LOG
-
-            EXIT_CODE=${PIPESTATUS[0]}
-
-            # -----------------------------
-            # PARSE FAILURE DETAILS
-            # -----------------------------
-            FAIL_TESTS=$(grep -A3 "Failing:" -n "$DEPLOY_LOG" | grep "Failing:" | awk '{print $2}')
-            FAIL_COMPONENTS=$(grep -i "Component Failures" -n "$DEPLOY_LOG" | sed 's/.*: //')
-            ERROR_MESSAGE=$(grep -i "Error:" "$DEPLOY_LOG" | sed 's/.*Error: //')
-
-            echo "export FAIL_TESTS=\"$FAIL_TESTS\"" >> $BASH_ENV
-            echo "export FAIL_COMPONENTS=\"$FAIL_COMPONENTS\"" >> $BASH_ENV
-            echo "export ERROR_MESSAGE=\"$ERROR_MESSAGE\"" >> $BASH_ENV
-
-            if [ "$EXIT_CODE" -eq 0 ]; then
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-            fi
-
-            echo "--- DEPLOY PARSE SUMMARY ---"
-            echo "SUCCESS: $DEPLOYMENT_SUCCESS"
-            echo "FAIL TESTS: $FAIL_TESTS"
-            echo "FAIL COMPONENTS: $FAIL_COMPONENTS"
-            echo "ERROR_MESSAGE: $ERROR_MESSAGE"
-
-      # ======================================================
-      # PUSH TAG ON SUCCESS
-      # ======================================================
-      - run:
-          name: Create & Push Tag
-          command: |
-            source $BASH_ENV
-
-            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-
-              NEW_REF=$((CURRENT_REF + 1))
-              NEW_TAG="$TAG_PREFIX-$NEW_REF"
-
-              git config user.email "circleci@example.com"
-              git config user.name "CircleCI"
-              git tag "$NEW_TAG"
-              git push origin "$NEW_TAG"
-            fi
-
-      # ======================================================
-      # SLACK NOTIFICATION ALWAYS
-      # ======================================================
-      - slack/notify:
-          event: always
-          channel: "${SLACK_DEFAULT_CHANNEL}"
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": ":rocket: Salesforce Deployment Result",
-                    "emoji": true
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Environment:*\n<< parameters.tag_prefix >>" },
-                    { "type": "mrkdwn", "text": "*Branch:*\n<< pipeline.git.branch >>" },
-                    { "type": "mrkdwn", "text": "*Status:*\n${DEPLOYMENT_SUCCESS}" },
-                    { "type": "mrkdwn", "text": "*Test Mode:*\n${TEST_LEVEL:-NoTestRun}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*❌ Failed Test Classes:*\n${FAIL_TESTS:-None}" }
-                },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*❌ Failed Components:*\n${FAIL_COMPONENTS:-None}" }
-                },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*📝 Error Message:*\n${ERROR_MESSAGE:-None}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":link: *CircleCI Job:* $CIRCLE_BUILD_URL" }
-                  ]
-                }
-              ]
-            }
-
-
-# ============================================================
-# JOBS
-# ============================================================
-jobs:
-
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-# ============================================================
-# WORKFLOWS
-# ============================================================
-workflows:
-  version: 2
-
-  build-test-deploy:
-    jobs:
-
-      - deploy-intqa:
-          context: sf-intqa
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: BRInt
-
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: BRStaging
-
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: main
