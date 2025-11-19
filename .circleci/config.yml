@@ -319,11 +319,12 @@ commands:
                 {
                   "type": "context",
                   "elements": [
-                    { "type": "mrkdwn", "text": ":link: *CircleCI Job:* << pipeline.link >>" }
+                    { "type": "mrkdwn", "text": ":link: *CircleCI Job:* $CIRCLE_BUILD_URL" }
                   ]
                 }
               ]
             }
+
 
 # ============================================================
 # JOBS
