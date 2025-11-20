@@ -2,7 +2,7 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
+  slack: circleci/slack@4.12.5   # 👈 Added Slack orb
 
 # ============================================================
 # COMMANDS
@@ -59,7 +59,7 @@ commands:
             sf org login jwt \
               --username "${SF_USERNAME_<< parameters.target_env >>}" \
               --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}}" \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
               --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
               --alias target \
               --set-default
@@ -72,18 +72,216 @@ commands:
       tag_prefix:
         type: string
     steps:
+      - run:
+          name: Find Most Recent Tag
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
 
-      # (UNCHANGED CONTENT - your entire logic remains as-is)
-      # I am not pasting again to keep message readable,
-      # but in final output this includes ALL your steps exactly.
+            git fetch --tags
 
-      # ------------------------------
-      # (Your full deploy logic here)
-      # ------------------------------
+            currentRef=0
+            currentTag=""
 
-      # ------------------------------------------------------
-      # Tag creation
-      # ------------------------------------------------------
+            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
+
+            if [ -n "$tags" ]; then
+              for tag in $tags; do
+                refNum=$(echo $tag | cut -d '-' -f 2)
+                if [ "$refNum" -gt "$currentRef" ]; then
+                  currentRef=$refNum
+                  currentTag=$tag
+                fi
+              done
+              echo "Latest tag: $currentTag"
+            else
+              echo "No tags found for prefix << parameters.tag_prefix >>"
+            fi
+
+            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
+            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
+
+      - run:
+          name: Build Package Manifest
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            echo "🔍 Building deployable metadata file list..."
+
+            if [ "$CURRENT_REF" -eq 0 ]; then
+              echo "🚀 First deployment — scanning entire force-app for metadata roots"
+
+              find force-app/main/default -type f \
+                \( -name "*.cls" \
+                -o -name "*.trigger" \
+                -o -name "*.page" \
+                -o -name "*.component" \
+                -o -name "*.cmp" \
+                -o -name "*.app" \
+                -o -name "*-meta.xml" \
+                -o -name "*.js-meta.xml" \
+                \) > files.txt || true
+
+            else
+              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
+
+              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
+
+              > files.txt
+
+              while IFS= read -r file; do
+                case "$file" in
+                  *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
+                      if [ -f "$file" ]; then
+                        echo "$file" >> files.txt
+                      fi
+                      ;;
+                esac
+              done < temp_files.txt
+            fi
+
+            echo "👉 Final metadata root list:"
+            cat files.txt || echo "(none)"
+
+            if [ -s files.txt ]; then
+              mapfile -t manifest_paths < files.txt
+              sf project generate manifest -p "${manifest_paths[@]}"
+              echo "export CHANGES_FOUND=true" >> $BASH_ENV
+              echo "📦 Generated package.xml:"
+              cat package.xml
+            else
+              echo "⚠️ No deployable metadata roots found."
+              echo "export CHANGES_FOUND=false" >> $BASH_ENV
+            fi
+
+      - run:
+          name: Identify Dependent Test Classes
+          command: |
+            set -euo pipefail
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
+
+            if [ ! -s changed_classes.txt ]; then
+              echo "⚠️ No Apex classes changed."
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
+            if [ -s changed_test_classes.txt ]; then
+              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
+              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
+            classList="'${classList}'"
+
+            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
+
+            sf data query --query "$soqlClasses" --use-tooling-api --target-org target --json > classIds.json
+
+            if command -v jq >/dev/null 2>&1; then
+              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
+            else
+              CLASS_IDS=""
+            fi
+
+            if [ -z "$CLASS_IDS" ]; then
+              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
+              exit 0
+            fi
+
+            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
+            classIdList="'${classIdList}'"
+
+            soqlDep="SELECT MetadataComponentName
+                     FROM MetadataComponentDependency
+                     WHERE RefMetadataComponentType = 'ApexClass'
+                     AND RefMetadataComponentId IN (${classIdList})
+                     AND MetadataComponentType = 'ApexClass'"
+
+            sf data query --query "$soqlDep" --use-tooling-api --target-org target --json > dependentTests.json
+
+            if command -v jq >/dev/null 2>&1; then
+              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
+            else
+              TEST_CLASSES=""
+            fi
+
+            echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
+
+      - run:
+          name: Deploy Metadata (Dynamic Tests)
+          command: |
+            set -euo pipefail
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              find force-app/main/default -type f \
+                \( -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
+                -o -name "*.component" -o -name "*.cmp" -o -name "*.app" \
+                -o -name "*-meta.xml" -o -name "*.js-meta.xml" \) > files.txt || true
+
+              if [ -s files.txt ]; then
+                mapfile -t manifest_paths < files.txt
+                sf project generate manifest -p "${manifest_paths[@]}"
+                export TEST_LEVEL=RunLocalTests
+              else
+                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
+                exit 0
+              fi
+            fi
+
+            mkdir -p test-results
+
+            if [ -n "${TEST_CLASSES}" ]; then
+              TEST_ARGS=""
+              for t in $TEST_CLASSES; do
+                TEST_ARGS="$TEST_ARGS --tests $t"
+              done
+
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunSpecifiedTests \
+                $TEST_ARGS \
+                --wait 360 \
+                --ignore-conflicts 
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
+            fi
+
+            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --ignore-conflicts \
+                --wait 360 
+
+              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+              exit 0
+            fi
+
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level NoTestRun \
+              --ignore-conflicts \
+              --wait 360 
+
+            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
+
       - run:
           name: Create & Push Tag
           command: |
@@ -100,6 +298,28 @@ commands:
               git tag "$NEW_TAG"
               git push origin "$NEW_TAG"
             fi
+
+      # ------------------------------------------------------
+      # Slack notification (Success/Fail)
+      # ------------------------------------------------------
+      - slack/notify:
+          event: always
+          channel: "${SLACK_DEFAULT_CHANNEL}"
+          custom: |
+            {
+              "text": ":rocket: *Salesforce Deployment Completed*",
+              "attachments": [
+                {
+                  "color": "#36a64f",
+                  "fields": [
+                    { "title": "Branch", "value": "<< pipeline.git.branch >>", "short": true },
+                    { "title": "Tag Prefix", "value": "<< parameters.tag_prefix >>", "short": true },
+                    { "title": "Status", "value": "${DEPLOYMENT_SUCCESS}" }
+                  ]
+                }
+              ]
+            }
+
 
 
 # ============================================================
@@ -120,30 +340,6 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      # -------------------------------------------------
-      # SLACK SUCCESS
-      # -------------------------------------------------
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            :white_check_mark: *INTQA Deployment Successful*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
-
-      # -------------------------------------------------
-      # SLACK FAILURE
-      # -------------------------------------------------
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            :x: *INTQA Deployment FAILED*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
-
 
   deploy-staging:
     parameters:
@@ -159,25 +355,6 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            :white_check_mark: *STAGING Deployment Successful*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
-
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            :x: *STAGING Deployment FAILED*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
-
-
   deploy-main:
     parameters:
       tag_prefix:
@@ -192,27 +369,10 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            :white_check_mark: *PROD Deployment Successful*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
-
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            :x: *PROD Deployment FAILED*  
-            *Branch:* `<< parameters.tag_prefix >>`  
-            *Pipeline:* https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}
-            *Job:* https://app.circleci.com/pipelines/github/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}
 
 
 # ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT)
+# WORKFLOWS
 # ============================================================
 workflows:
   version: 2
