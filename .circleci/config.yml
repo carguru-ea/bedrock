@@ -9,424 +9,120 @@ orbs:
 # ============================================================
 commands:
 
-  # ----------------------------------------------------------
-  # Install Salesforce CLI + Java
-  # ----------------------------------------------------------
-  install-tooling:
+  # Jobs to be executed
+jobs:
+  build:
+    runs-on: arc-ent
+
     steps:
-      - restore_cache:
-          keys:
-            - sf-cli-cache-v1
+      # Checkout the code in the pull request
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+        with:
+          # Because scheduled jobs always run on the latest commit of the default branch,
+          # you must define the branch you are checking out with the 'ref' attribute
+          ref: BRInt
+          path: Bedrock 
 
-      - run:
-          name: Install Salesforce CLI and Java
-          command: |
-            if ! sf --version > /dev/null 2>&1; then
-              sudo npm install -g @salesforce/cli
-            fi
+      # Write SF dev auth url to file
+      - name: Write Token to File
+        run: "echo ${{ secrets.SFDX_INTQA_AUTH_URL}} > token.txt"
 
-            sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
-            
-            echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
-            source "$BASH_ENV"
+      # Setup Node Actions
+      - name: Setup Node Actions
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-            sf --version
+      # Install NPM
+      - name: Install NPM
+        run: "npm install -g latest"
 
-      - save_cache:
-          key: sf-cli-cache-v1
-          paths:
-            - ~/.npm
-            - /usr/local/lib/node_modules
-            - /usr/local/bin
+      # Install SF CLI
+      - name: Install Salesforce CLI
+        run: "npm install @salesforce/cli --global"
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
-  jwt-auth:
-    parameters:
-      target_env:
-        type: string
-    steps:
-      - run:
-          name: Decode JWT key for << parameters.target_env >>
-          command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
-            chmod 600 server.key
+      # Ensure SF CLI is updated to latest version
+      - name: Update Salesforce CLI
+        run: "npm update --global @salesforce/cli"
 
-      - run:
-          name: Authenticate to Salesforce (<< parameters.target_env >>)
-          command: |
-            sf org login jwt \
-              --username "${SF_USERNAME_<< parameters.target_env >>}" \
-              --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
-              --alias target \
-              --set-default
+      # Auth to devhub with stored token
+      - name: Auth with DevHub
+        run: "sf auth sfdxurl store -f token.txt -a targetOrg -d"
 
-  # ----------------------------------------------------------
-  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
-  # ----------------------------------------------------------
-  deploy-with-tags:
-    parameters:
-      tag_prefix:
-        type: string
-    steps:
+      # Find the Latest Tag
+      - name: Find Most Recent Tag
+        id: tag_finder
+        run: | 
+          cd Bedrock
+          git fetch --tags
+          currentRef=0
 
-      # ------------------------------------------------------
-      # Find Most Recent Tag
-      # ------------------------------------------------------
-      - run:
-          name: Find Most Recent Tag
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            git fetch --tags
-
-            currentRef=0
-            currentTag=""
-
-            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
-
-            if [ -n "$tags" ]; then
-              for tag in $tags; do
-                refNum=$(echo $tag | cut -d '-' -f 2)
-                if [ "$refNum" -gt "$currentRef" ]; then
+          # Store tags in a variable
+          tags=$(git tag -l 'INTQA-[0-9]*' | sort -V)
+          
+          if [ -n "$tags" ]; then
+            for tag in $tags; do
+              refNum=$(echo $tag | cut -d '-' -f 2)
+              if test $refNum -gt $currentRef; then
                   currentRef=$refNum
                   currentTag=$tag
-                fi
-              done
-              echo "Latest tag: $currentTag"
-            else
-              echo "No tags found for prefix << parameters.tag_prefix >>"
-            fi
-
-            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
-            echo "export CURRENT_TAG=$currentTag" >> $BASH_ENV
-            echo "export TAG_PREFIX=<< parameters.tag_prefix >>" >> $BASH_ENV
-
-      # ------------------------------------------------------
-      # Build Package Manifest
-      # ------------------------------------------------------
-      - run:
-          name: Build Package Manifest
-          command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            echo "🔍 Building deployable metadata file list..."
-
-            if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "🚀 First deployment — scanning entire force-app for metadata roots"
-
-              find force-app/main/default -type f \
-                \( -name "*.cls" \
-                -o -name "*.trigger" \
-                -o -name "*.page" \
-                -o -name "*.component" \
-                -o -name "*.cmp" \
-                -o -name "*.app" \
-                -o -name "*-meta.xml" \
-                -o -name "*.js-meta.xml" \
-                \) > files.txt || true
-
-            else
-              echo "🔁 Delta deployment from tag: $CURRENT_TAG"
-
-              git diff --name-only --relative $CURRENT_TAG HEAD | grep '^force-app/' > temp_files.txt || true
-
-              > files.txt
-
-              while IFS= read -r file; do
-                case "$file" in
-                  *.cls|*.trigger|*.page|*.component|*.cmp|*.app|*-meta.xml|*.js-meta.xml)
-                      if [ -f "$file" ]; then
-                        echo "$file" >> files.txt
-                      fi
-                      ;;
-                esac
-              done < temp_files.txt
-            fi
-
-            echo "👉 Final metadata root list:"
-            cat files.txt || echo "(none)"
-
-            if [ -s files.txt ]; then
-              mapfile -t manifest_paths < files.txt
-              sf project generate manifest -p "${manifest_paths[@]}"
-              echo "export CHANGES_FOUND=true" >> $BASH_ENV
-
-              echo "📦 Generated package.xml:"
-              cat package.xml
-            else
-              echo "⚠️ No deployable metadata roots found."
-              echo "export CHANGES_FOUND=false" >> $BASH_ENV
-            fi
-
-      # ------------------------------------------------------
-      # Test Class Discovery
-      # ------------------------------------------------------
-      - run:
-          name: Identify Dependent Test Classes
-          command: |
-            set -euo pipefail
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            grep -oP '(?<=classes/)[A-Za-z0-9_]+(?=\.cls$)' files.txt | sort -u > changed_classes.txt || true
-
-            if [ ! -s changed_classes.txt ]; then
-              echo "⚠️ No Apex classes changed."
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            grep -E 'Test(s)?$' changed_classes.txt > changed_test_classes.txt || true
-            if [ -s changed_test_classes.txt ]; then
-              TEST_CLASSES=$(cat changed_test_classes.txt | xargs)
-              echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            classList=$(paste -sd "," changed_classes.txt | sed "s/,/','/g")
-            classList="'${classList}'"
-
-            soqlClasses="SELECT Id, Name FROM ApexClass WHERE Name IN (${classList})"
-
-            sf data query \
-              --query "$soqlClasses" \
-              --use-tooling-api \
-              --target-org target \
-              --json > classIds.json
-
-            if command -v jq >/dev/null 2>&1; then
-              CLASS_IDS=$(jq -r '.result.records[].Id' classIds.json | xargs)
-            else
-              CLASS_IDS=""
-            fi
-
-            if [ -z "$CLASS_IDS" ]; then
-              echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-              exit 0
-            fi
-
-            classIdList=$(echo "$CLASS_IDS" | sed "s/ /','/g")
-            classIdList="'${classIdList}'"
-
-            soqlDep="SELECT MetadataComponentName
-                     FROM MetadataComponentDependency
-                     WHERE RefMetadataComponentType = 'ApexClass'
-                     AND RefMetadataComponentId IN (${classIdList})
-                     AND MetadataComponentType = 'ApexClass'"
-
-            sf data query \
-              --query "$soqlDep" \
-              --use-tooling-api \
-              --target-org target \
-              --json > dependentTests.json || {
-                echo "export TEST_CLASSES=\"\"" >> $BASH_ENV
-                exit 0
-              }
-
-            if command -v jq >/dev/null 2>&1; then
-              TEST_CLASSES=$(jq -r '.result.records[].MetadataComponentName' dependentTests.json | xargs)
-            else
-              TEST_CLASSES=""
-            fi
-
-            echo "export TEST_CLASSES=\"$TEST_CLASSES\"" >> $BASH_ENV
-
-      # ------------------------------------------------------
-      # Deploy
-      # ------------------------------------------------------
-      - run:
-          name: Deploy Metadata (Dynamic Tests)
-          command: |
-            set -euo pipefail
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            mkdir -p test-results
-
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              find force-app/main/default -type f \
-                \( -name "*.cls" -o -name "*.trigger" -o -name "*.page" \
-                -o -name "*.component" -o -name "*.cmp" -o -name "*.app" \
-                -o -name "*-meta.xml" -o -name "*.js-meta.xml" \) > files.txt || true
-
-              if [ -s files.txt ]; then
-                mapfile -t manifest_paths < files.txt
-                sf project generate manifest -p "${manifest_paths[@]}"
-                export TEST_LEVEL=RunLocalTests
-              else
-                echo "export DEPLOYMENT_SUCCESS=false" >> $BASH_ENV
-                exit 0
               fi
+            done
+          else
+            echo "No Tags Found..."
+            currentRef=0
+          fi
+        
+          echo "Current Ref: $currentRef"
+          echo "ref=$currentRef" >> $GITHUB_OUTPUT
+      
+      # Get the Tag from the last deployment. 
+      - name: Build the Package Manifest
+        id: build_manifest
+        shell: bash
+        run: |
+            cd Bedrock/Bedrock
+            oldIFS="$IFS"
+            IFS=$'\n'
+
+            git diff --diff-filter=ACMR --name-only INTQA-${{ steps.tag_finder.outputs.ref }} HEAD | cut -b 9- | grep '^force-app/' > files.txt || true
+            
+            if [ -s files.txt ]; then
+                echo "Files to include in manifest:"
+                line_count=$(wc -l < files.txt)
+                if [ $line_count -gt 0 ]; then
+                    sf project generate manifest -p $(cat files.txt)
+                    echo "changesFound=true" >> $GITHUB_OUTPUT
+                else 
+                    echo "No new commits to deploy to INTQA."
+                    echo "changesFound=false" >> $GITHUB_OUTPUT
+                    exit 0
+                fi
+            else 
+                echo "No new commits to deploy to INTQA."
+                echo "changesFound=false" >> $GITHUB_OUTPUT
+                exit 0
             fi
+            
+            IFS="$oldIFS"
 
-            if [ -n "${TEST_CLASSES}" ]; then
-              TEST_ARGS=""
-              for t in $TEST_CLASSES; do
-                TEST_ARGS="$TEST_ARGS --tests $t"
-              done
+      # Change directory to where source is stored, push source to targetOrg
+      - name: Push source
+        if: ${{ steps.build_manifest.outputs.changesFound == 'true' }}
+        run: |
+          cd Bedrock/Bedrock
+          if test -f package.xml; then
+              sf project deploy start -w 360 -x package.xml -l RunLocalTests -o targetOrg 
+          else 
+              echo "No Package Found!"
+              exit 1
+          fi
 
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunSpecifiedTests \
-                $TEST_ARGS \
-                --wait 360 \
-                --ignore-conflicts 
-
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
-
-            if [ "${TEST_LEVEL:-}" = "RunLocalTests" ]; then
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --ignore-conflicts \
-                --wait 360 
-
-              echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-              exit 0
-            fi
-
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level NoTestRun \
-              --ignore-conflicts \
-              --wait 360 
-
-            echo "export DEPLOYMENT_SUCCESS=true" >> $BASH_ENV
-
-
-      # ------------------------------------------------------
-      # Tag Creation
-      # ------------------------------------------------------
-      - run:
-          name: Create & Push Tag
-          command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            if [ "$DEPLOYMENT_SUCCESS" = "true" ]; then
-              NEW_REF=$((CURRENT_REF + 1))
-              NEW_TAG="$TAG_PREFIX-$NEW_REF"
-
-              git config user.email "circleci@example.com"
-              git config user.name "CircleCI"
-              git tag "$NEW_TAG"
-              git push origin "$NEW_TAG"
-            fi
-
-
-
-# ============================================================
-# JOBS PER ORG
-# ============================================================
-jobs:
-
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-      # SLACK NOTIFICATION ADDED HERE
-      - slack/status:
-          fail_only: false
-          webhook: ${SLACK_WEBHOOK}
-
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-      # SLACK NOTIFICATION ADDED HERE
-      - slack/status:
-          fail_only: false
-          webhook: ${SLACK_WEBHOOK}
-
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-      # SLACK NOTIFICATION ADDED HERE
-      - slack/status:
-          fail_only: false
-          webhook: ${SLACK_WEBHOOK}
-
-
-
-
-# ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT)
-# ============================================================
-workflows:
-  version: 2
-
-  build-test-deploy:
-    jobs:
-
-      - deploy-intqa:
-          context: sf-intqa
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: BRInt
-            tags:
-              ignore: /.*/
-
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: BRStaging
-            tags:
-              ignore: /.*/
-
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: << pipeline.git.branch >>
-          filters:
-            branches:
-              only: main
-            tags:
-              ignore: /.*/
+      # If push was succesful, set new tag
+      - name: Set New Tag
+        if: ${{ steps.build_manifest.outputs.changesFound == 'true' }}
+        run: |
+          cd Bedrock
+          git tag "INTQA-$(( ${{ steps.tag_finder.outputs.ref }} + 1 ))"
+          git push origin "INTQA-$(( ${{ steps.tag_finder.outputs.ref }} + 1 ))"
