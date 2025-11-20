@@ -50,12 +50,30 @@ jobs:
           name: Update Salesforce CLI
           command: npm update -g @salesforce/cli
 
-      # ------------------------------
-      # Authenticate
-      # ------------------------------
+      # ----------------------------------------------------------
+      # JWT Authentication
+      # ----------------------------------------------------------
+      jwt-auth:
+        parameters:
+          target_env:
+            type: string
+        steps:
+          - run:
+              name: Decode JWT key for << parameters.target_env >>
+              command: |
+                echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+                chmod 600 server.key
+
       - run:
-          name: Auth with DevHub
-          command: sf auth sfdxurl store -f token.txt -a targetOrg -d
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
 
       # ------------------------------
       # Find Most Recent Tag
