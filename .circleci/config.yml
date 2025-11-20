@@ -4,6 +4,32 @@ orbs:
   node: circleci/node@5.0.2
 
 # =============================================================
+# COMMANDS
+# =============================================================
+commands:
+  jwt-auth:
+    parameters:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Decode JWT key for << parameters.target_env >>
+          command: |
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            chmod 600 server.key
+
+      - run:
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_<< parameters.target_env >>}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
+              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
+              --alias target \
+              --set-default
+
+# =============================================================
 # JOB: INTQA DELTA DEPLOYMENT
 # =============================================================
 jobs:
@@ -50,30 +76,11 @@ jobs:
           name: Update Salesforce CLI
           command: npm update -g @salesforce/cli
 
-      # ----------------------------------------------------------
-      # JWT Authentication
-      # ----------------------------------------------------------
-      jwt-auth:
-        parameters:
-          target_env:
-            type: string
-        steps:
-          - run:
-              name: Decode JWT key for << parameters.target_env >>
-              command: |
-                echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
-                chmod 600 server.key
-
-      - run:
-          name: Authenticate to Salesforce (<< parameters.target_env >>)
-          command: |
-            sf org login jwt \
-              --username "${SF_USERNAME_<< parameters.target_env >>}" \
-              --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_<< parameters.target_env >>}" \
-              --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
-              --alias target \
-              --set-default
+      # ------------------------------
+      # Call JWT Auth Command
+      # ------------------------------
+      - jwt-auth:
+          target_env: INTQA
 
       # ------------------------------
       # Find Most Recent Tag
@@ -134,7 +141,7 @@ jobs:
             if [ "$CHANGES_FOUND" = "true" ]; then
               cd Bedrock/Bedrock
               if test -f package.xml; then
-                sf project deploy start -w 360 -x package.xml -l RunLocalTests -o targetOrg 
+                sf project deploy start -w 360 -x package.xml -l RunLocalTests -o target 
               else
                 echo "No Package Found!"
                 exit 1
@@ -171,7 +178,6 @@ jobs:
           name: Deployment Failure Message
           when: on_fail
           command: echo "Deployment Failed! :("
-
 
 # =============================================================
 # WORKFLOW: INTQA Delta Deployment (manual trigger only)
