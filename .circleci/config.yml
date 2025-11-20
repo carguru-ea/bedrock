@@ -307,18 +307,51 @@ commands:
           channel: "${SLACK_DEFAULT_CHANNEL}"
           custom: |
             {
-              "text": ":rocket: *Salesforce Deployment Completed*",
-              "attachments": [
+              "blocks": [
                 {
-                  "color": "#36a64f",
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":rocket: Salesforce Deployment Result",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
                   "fields": [
-                    { "title": "Branch", "value": "<< pipeline.git.branch >>", "short": true },
-                    { "title": "Tag Prefix", "value": "<< parameters.tag_prefix >>", "short": true },
-                    { "title": "Status", "value": "${DEPLOYMENT_SUCCESS}" }
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n<< parameters.tag_prefix >>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Branch:*\n<< pipeline.git.branch >>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\n${DEPLOYMENT_SUCCESS:-unknown}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Test Mode:*\n${TEST_LEVEL:-NoTestRun}"
+                    }
+                  ]
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":clock1: *Completed at:* $(date)"
+                    }
                   ]
                 }
               ]
             }
+
 
 
 
