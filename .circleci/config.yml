@@ -30,34 +30,58 @@ commands:
               --set-default
 
 # =============================================================
-# JOB: INTQA DELTA DEPLOYMENT
+# JOB: GENERIC DELTA DEPLOYMENT
+# (Runs on BRInt, BRStaging, main)
 # =============================================================
 jobs:
-  intqa-delta-deploy:
+  delta-deploy:
     docker:
       - image: cimg/base:stable
 
-    environment:
-      BRANCH_TO_CHECKOUT: BRInt
-      TAG_PREFIX: "INTQA-"
-
     steps:
-      # ------------------------------
-      # Checkout (same as GitHub Actions)
-      # ------------------------------
+
+      # --------------------------------------------------------
+      # DETECT BRANCH + SET TAG PREFIX AUTOMATICALLY
+      # --------------------------------------------------------
+      - run:
+          name: Set Branch & Tag Prefix
+          command: |
+            echo "CircleCI Branch: $CIRCLE_BRANCH"
+
+            if [ "$CIRCLE_BRANCH" = "BRInt" ]; then
+              echo 'export TAG_PREFIX="INTQA-"' >> $BASH_ENV
+              echo 'export TARGET_ENV="INTQA"' >> $BASH_ENV
+            elif [ "$CIRCLE_BRANCH" = "BRStaging" ]; then
+              echo 'export TAG_PREFIX="STAGINGUAT-"' >> $BASH_ENV
+              echo 'export TARGET_ENV="STAGINGUAT"' >> $BASH_ENV
+            elif [ "$CIRCLE_BRANCH" = "main" ]; then
+              echo 'export TAG_PREFIX="PROD-"' >> $BASH_ENV
+              echo 'export TARGET_ENV="PROD"' >> $BASH_ENV
+            else
+              echo "❌ Unsupported branch. Exiting."
+              exit 1
+            fi
+
+            source $BASH_ENV
+            echo "Using Tag Prefix: $TAG_PREFIX"
+            echo "Target Env: $TARGET_ENV"
+
+      # --------------------------------------------------------
+      # Checkout
+      # --------------------------------------------------------
       - checkout:
           path: Bedrock
 
-      # ------------------------------
-      # Write SF Auth Token
-      # ------------------------------
+      # --------------------------------------------------------
+      # Write token file (INTQA-only legacy use)
+      # --------------------------------------------------------
       - run:
           name: Write Token to File
           command: echo "$SFDX_INTQA_AUTH_URL" > token.txt
 
-      # ------------------------------
-      # Setup Node
-      # ------------------------------
+      # --------------------------------------------------------
+      # Install tooling
+      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -65,9 +89,6 @@ jobs:
           name: Install NPM latest
           command: npm install -g latest
 
-      # ------------------------------
-      # Install Salesforce CLI
-      # ------------------------------
       - run:
           name: Install Salesforce CLI
           command: npm install -g @salesforce/cli
@@ -76,18 +97,20 @@ jobs:
           name: Update Salesforce CLI
           command: npm update -g @salesforce/cli
 
-      # ------------------------------
-      # Call JWT Auth Command
-      # ------------------------------
+      # --------------------------------------------------------
+      # JWT Auth (dynamic by branch)
+      # --------------------------------------------------------
       - jwt-auth:
-          target_env: INTQA
+          target_env: << pipeline.parameters.target-env >>
 
-      # ------------------------------
+      # --------------------------------------------------------
       # Find Most Recent Tag
-      # ------------------------------
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
+            source $BASH_ENV
+
             cd Bedrock
             git fetch --tags
             
@@ -109,9 +132,9 @@ jobs:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # ------------------------------
-      # Build Package Manifest (Delta)
-      # ------------------------------
+      # --------------------------------------------------------
+      # Build Delta Manifest
+      # --------------------------------------------------------
       - run:
           name: Build Manifest for Delta Deploy
           command: |
@@ -131,15 +154,17 @@ jobs:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # ------------------------------
-      # Deploy to INTQA
-      # ------------------------------
+      # --------------------------------------------------------
+      # Deploy
+      # --------------------------------------------------------
       - run:
-          name: Deploy Delta to INTQA
+          name: Deploy Delta to Org
           command: |
             source $BASH_ENV
+
             if [ "$CHANGES_FOUND" = "true" ]; then
               cd Bedrock/Bedrock
+
               if test -f package.xml; then
                 sf project deploy start -w 360 -x package.xml -l RunLocalTests -o target 
               else
@@ -150,13 +175,14 @@ jobs:
               echo "Skipping deploy — no changes found."
             fi
 
-      # ------------------------------
+      # --------------------------------------------------------
       # Create New Tag
-      # ------------------------------
+      # --------------------------------------------------------
       - run:
           name: Create & Push New Tag
           command: |
             source $BASH_ENV
+
             if [ "$CHANGES_FOUND" = "true" ]; then
               cd Bedrock
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
@@ -166,9 +192,9 @@ jobs:
               echo "Skipping tag — no changes."
             fi
 
-      # ------------------------------
+      # --------------------------------------------------------
       # Notifications
-      # ------------------------------
+      # --------------------------------------------------------
       - run:
           name: Deployment Success Message
           when: on_success
@@ -180,9 +206,15 @@ jobs:
           command: echo "Deployment Failed! :("
 
 # =============================================================
-# WORKFLOW: INTQA Delta Deployment (manual trigger only)
+# WORKFLOW – Runs for All 3 Branches Automatically
 # =============================================================
 workflows:
-  intqa-scheduled-deploy:
+  delta-deploy-workflow:
     jobs:
-      - intqa-delta-deploy
+      - delta-deploy:
+          filters:
+            branches:
+              only:
+                - BRInt
+                - BRStaging
+                - main
