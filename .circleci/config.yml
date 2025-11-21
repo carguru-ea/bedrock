@@ -156,11 +156,22 @@ jobs:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
       
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level RunLocalTests \
-              --wait 360
+            if [ "$FULL_DEPLOY" = "true" ]; then
+              echo "🚀 Running FULL DEPLOY..."
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+            else
+              echo "🚀 Running DELTA DEPLOY..."
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+            fi
+
 
 
       # --------------------------------------------------------
