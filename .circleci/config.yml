@@ -3,9 +3,9 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# =============================================================
+# ============================================================
 # COMMANDS
-# =============================================================
+# ============================================================
 commands:
   jwt-auth:
     parameters:
@@ -15,7 +15,8 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
@@ -29,79 +30,36 @@ commands:
               --alias target \
               --set-default
 
-# =============================================================
-# JOB: GENERIC DELTA DEPLOYMENT
-# (Runs on BRInt, BRStaging, main)
-# =============================================================
+# ============================================================
+# GENERIC DELTA DEPLOY JOB (dynamic org + tags)
+# ============================================================
 jobs:
   delta-deploy:
+    parameters:
+      target_env:
+        type: string
+      tag_prefix:
+        type: string
+
     docker:
       - image: cimg/base:stable
 
     steps:
+      - checkout
 
-      # --------------------------------------------------------
-      # DETECT BRANCH + SET TAG PREFIX AUTOMATICALLY
-      # --------------------------------------------------------
-      - run:
-          name: Set Branch & Tag Prefix
-          command: |
-            echo "CircleCI Branch: $CIRCLE_BRANCH"
-
-            if [ "$CIRCLE_BRANCH" = "BRInt" ]; then
-              echo 'export TAG_PREFIX="INTQA-"' >> $BASH_ENV
-              echo 'export TARGET_ENV="INTQA"' >> $BASH_ENV
-            elif [ "$CIRCLE_BRANCH" = "BRStaging" ]; then
-              echo 'export TAG_PREFIX="STAGINGUAT-"' >> $BASH_ENV
-              echo 'export TARGET_ENV="STAGINGUAT"' >> $BASH_ENV
-            elif [ "$CIRCLE_BRANCH" = "main" ]; then
-              echo 'export TAG_PREFIX="PROD-"' >> $BASH_ENV
-              echo 'export TARGET_ENV="PROD"' >> $BASH_ENV
-            else
-              echo "❌ Unsupported branch. Exiting."
-              exit 1
-            fi
-
-            source $BASH_ENV
-            echo "Using Tag Prefix: $TAG_PREFIX"
-            echo "Target Env: $TARGET_ENV"
-
-      # --------------------------------------------------------
-      # Checkout
-      # --------------------------------------------------------
-      - checkout:
-          path: Bedrock
-
-      # --------------------------------------------------------
-      # Write token file (INTQA-only legacy use)
-      # --------------------------------------------------------
-      - run:
-          name: Write Token to File
-          command: echo "$SFDX_INTQA_AUTH_URL" > token.txt
-
-      # --------------------------------------------------------
-      # Install tooling
-      # --------------------------------------------------------
+      # Tooling
       - node/install:
           node-version: "20"
 
       - run:
-          name: Install NPM latest
-          command: npm install -g latest
+          name: Install SF CLI
+          command: |
+            npm install -g @salesforce/cli
+            sf --version
 
-      - run:
-          name: Install Salesforce CLI
-          command: npm install -g @salesforce/cli
-
-      - run:
-          name: Update Salesforce CLI
-          command: npm update -g @salesforce/cli
-
-      # --------------------------------------------------------
-      # JWT Auth (dynamic by branch)
-      # --------------------------------------------------------
+      # 🔥 DYNAMIC JWT AUTH (INTQA or STAGINGUAT or PROD)
       - jwt-auth:
-          target_env: << pipeline.parameters.target-env >>
+          target_env: << parameters.target_env >>
 
       # --------------------------------------------------------
       # Find Most Recent Tag
@@ -109,48 +67,42 @@ jobs:
       - run:
           name: Find Most Recent Tag
           command: |
-            source $BASH_ENV
+            TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            cd Bedrock
             git fetch --tags
-            
             currentRef=0
+
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
               for tag in $tags; do
                 refNum=$(echo $tag | cut -d '-' -f 2)
-                if test $refNum -gt $currentRef; then
+                if test "$refNum" -gt "$currentRef"; then
                   currentRef=$refNum
-                  currentTag=$tag
                 fi
               done
-            else
-              echo "No Tags Found…"
-              currentRef=0
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
       # --------------------------------------------------------
-      # Build Delta Manifest
+      # Delta Manifest Build
       # --------------------------------------------------------
       - run:
-          name: Build Manifest for Delta Deploy
+          name: Build Manifest
           command: |
             source $BASH_ENV
-            cd Bedrock/Bedrock
+            TAG_PREFIX="<< parameters.tag_prefix >>"
 
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
-              | cut -b 9- | grep '^force-app/' > files.txt || true
+              | grep '^force-app/' > files.txt || true
 
             if [ -s files.txt ]; then
-              echo "Changes found:"
+              echo "Changes detected:"
               cat files.txt
               sf project generate manifest -p $(cat files.txt)
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes to deploy."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
@@ -158,63 +110,67 @@ jobs:
       # Deploy
       # --------------------------------------------------------
       - run:
-          name: Deploy Delta to Org
+          name: Deploy Changes
           command: |
             source $BASH_ENV
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              cd Bedrock/Bedrock
-
-              if test -f package.xml; then
-                sf project deploy start -w 360 -x package.xml -l RunLocalTests -o target 
-              else
-                echo "No Package Found!"
-                exit 1
-              fi
-            else
-              echo "Skipping deploy — no changes found."
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "No delta found — skipping deploy"
+              exit 0
             fi
 
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level RunLocalTests \
+              --wait 360
+
       # --------------------------------------------------------
-      # Create New Tag
+      # Tag Creation
       # --------------------------------------------------------
       - run:
           name: Create & Push New Tag
           command: |
             source $BASH_ENV
+            TAG_PREFIX="<< parameters.tag_prefix >>"
 
             if [ "$CHANGES_FOUND" = "true" ]; then
-              cd Bedrock
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
               git tag "$newTag"
               git push origin "$newTag"
-            else
-              echo "Skipping tag — no changes."
             fi
 
-      # --------------------------------------------------------
-      # Notifications
-      # --------------------------------------------------------
-      - run:
-          name: Deployment Success Message
-          when: on_success
-          command: echo "Successful Deployment!"
-
-      - run:
-          name: Deployment Failure Message
-          when: on_fail
-          command: echo "Deployment Failed! :("
-
-# =============================================================
-# WORKFLOW – Runs for All 3 Branches Automatically
-# =============================================================
+# ============================================================
+# WORKFLOW → AUTOMATIC ENVIRONMENT SELECTION
+# ============================================================
 workflows:
-  delta-deploy-workflow:
+  version: 2
+  deploy-by-branch:
     jobs:
+
+      # BRInt → INTQA
       - delta-deploy:
+          context: sf-intqa
+          target_env: "INTQA"
+          tag_prefix: "INTQA-"
           filters:
             branches:
-              only:
-                - BRInt
-                - BRStaging
-                - main
+              only: BRInt
+
+      # BRStaging → STAGINGUAT
+      - delta-deploy:
+          context: sf-staging
+          target_env: "STAGINGUAT"
+          tag_prefix: "STAGINGUAT-"
+          filters:
+            branches:
+              only: BRStaging
+
+      # main → PROD
+      - delta-deploy:
+          context: sf-prod
+          target_env: "PROD"
+          tag_prefix: "PROD-"
+          filters:
+            branches:
+              only: main
