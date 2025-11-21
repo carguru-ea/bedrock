@@ -1,37 +1,38 @@
 version: 2.1
 
-parameters:
-  target_env:
-    type: string
-    default: "INTQA"
-  tag_prefix:
-    type: string
-    default: "INTQA"
-
 orbs:
   node: circleci/node@5.0.2
 
+# ============================================================
+# COMMANDS
+# ============================================================
 commands:
+
   # ----------------------------------------------------------
-  # Install Salesforce CLI + Java 
+  # Install Salesforce CLI + Java
   # ----------------------------------------------------------
   install-tooling:
     steps:
       - restore_cache:
           keys:
-            - sf-cli-cache-v2
+            - sf-cli-cache-v1
+
       - run:
-          name: Install Salesforce CLI and dependencies
+          name: Install Salesforce CLI and Java
           command: |
             if ! sf --version > /dev/null 2>&1; then
               sudo npm install -g @salesforce/cli
             fi
+
             sudo apt-get update && sudo apt-get install -y openjdk-17-jdk
+            
             echo 'export PATH=$(npm bin -g):$PATH' >> "$BASH_ENV"
             source "$BASH_ENV"
+
             sf --version
+
       - save_cache:
-          key: sf-cli-cache-v2
+          key: sf-cli-cache-v1
           paths:
             - ~/.npm
             - /usr/local/lib/node_modules
@@ -46,23 +47,10 @@ commands:
         type: string
     steps:
       - run:
-          name: Decode JWT Key for << parameters.target_env >>
+          name: Decode JWT key for << parameters.target_env >>
           command: |
-            set -euo pipefail
-            TARGET_ENV="<< parameters.target_env >>"
-            echo "🔑 Decoding JWT key for environment: $TARGET_ENV"
-
-            VAR_NAME="JWT_KEY_${TARGET_ENV}"
-            JWT_KEY_VALUE=${!VAR_NAME:-}
-
-            if [ -z "$JWT_KEY_VALUE" ]; then
-              echo "❌ JWT key not found for environment $TARGET_ENV"
-              exit 1
-            fi
-
-            echo "$JWT_KEY_VALUE" | base64 -d > server.key 2>/dev/null || echo "$JWT_KEY_VALUE" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
-            echo "✅ JWT key decoded successfully."
 
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
@@ -74,126 +62,99 @@ commands:
               --instance-url "${SF_INSTANCEURL_<< parameters.target_env >>}" \
               --alias target \
               --set-default
-            echo "✅ Authenticated successfully to Salesforce."
-
-
 
   # ----------------------------------------------------------
-  # Tag-based Deployment
+  # Tag-Based Deployment With Delta + Manifest + Dep Test Logic
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
-      test_level:
-        type: string
-        default: RunLocalTests
       tag_prefix:
         type: string
     steps:
-      - run:
-          name: Build and Deploy Metadata
-          command: |
-            echo "🚀 Starting deployment for << parameters.tag_prefix >>..."
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
 
-            git fetch --tags
-            tags=$(git tag -l '<< parameters.tag_prefix >>-[0-9]*' | sort -V)
-            if [ -z "$tags" ]; then
-              echo "First deployment, including all files..."
-              sf project generate manifest -p force-app
-            else
-              latest_tag=$(echo "$tags" | tail -n 1)
-              echo "Deploying delta from $latest_tag"
-              git diff --name-only --relative $latest_tag HEAD | grep '^force-app/' > changed.txt || true
-              if [ -s changed.txt ]; then
-                sf project generate manifest -p $(cat changed.txt | tr '\n' ',')
-              else
-                echo "No changes detected, skipping deploy."
-                echo "export SKIP_DEPLOY=true" >> $BASH_ENV
-              fi
-            fi
+    
 
-            source $BASH_ENV
-            if [ "${SKIP_DEPLOY:-false}" = "true" ]; then
-              echo "✅ Nothing to deploy."
-              exit 0
-            fi
-
-            echo "Deploying package..."
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --wait 360 \
-              --ignore-conflicts \
-              --json > deploy-output.json || true
-
-            DEPLOY_ID=$(jq -r '.result.id // empty' deploy-output.json)
-            echo "export DEPLOY_ID=$DEPLOY_ID" >> $BASH_ENV
-            echo "Captured Deploy ID: $DEPLOY_ID"
-
-  # ----------------------------------------------------------
-  # Cancel Active Salesforce Deployment
-  # ----------------------------------------------------------
-  cancel-deploy:
-    parameters:
-      target_env:
-        type: string
-    steps:
-      - install-tooling
-      - jwt-auth:
-          target_env: << parameters.target_env >>
-      - run:
-          name: Cancel Active Salesforce Deployment
-          command: |
-            echo "🧹 Checking for ongoing deployment..."
-            if [ -n "${DEPLOY_ID:-}" ]; then
-              echo "Cancelling deployment job $DEPLOY_ID..."
-              sf project deploy cancel --job-id "$DEPLOY_ID" --target-org target || true
-            else
-              echo "No active deployment ID found."
-            fi
-
-# -----------------------------------------------------------------
-# JOBS
-# -----------------------------------------------------------------
+# ============================================================
+# JOBS PER ORG
+# ============================================================
 jobs:
-  deploy:
+
+  deploy-intqa:
+    parameters:
+      tag_prefix:
+        type: string
     docker:
       - image: cimg/node:20.10
     steps:
       - checkout
       - install-tooling
       - jwt-auth:
-          target_env: << pipeline.parameters.target_env >>
+          target_env: INTQA
       - deploy-with-tags:
-          tag_prefix: << pipeline.parameters.tag_prefix >>
-      - store_test_results:
-          path: test-results
-      - store_artifacts:
-          path: test-results
-          destination: apex-test-results
+          tag_prefix: << parameters.tag_prefix >>
 
-  cancel-deploy-job:
+  deploy-staging:
+    parameters:
+      tag_prefix:
+        type: string
     docker:
       - image: cimg/node:20.10
     steps:
-      - cancel-deploy:
-          target_env: << pipeline.parameters.target_env >>
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
 
-# -----------------------------------------------------------------
-# WORKFLOW
-# -----------------------------------------------------------------
+  deploy-main:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+
+
+# ============================================================
+# WORKFLOWS (BRANCH → ENVIRONMENT)
+# ============================================================
 workflows:
   version: 2
-  deploy-pipeline:
+
+  build-test-deploy:
     jobs:
-      - deploy:
-          context: sf-<< pipeline.parameters.target_env >>
-      - cancel-deploy-job:
-          requires:
-            - deploy
+
+      - deploy-intqa:
+          context: sf-intqa
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
-              only:
-                - BRInt
-                - BRStaging
+              only: BRInt
+            tags:
+              ignore: /.*/
+
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: << pipeline.git.branch >>
+          filters:
+            branches:
+              only: BRStaging
+            tags:
+              ignore: /.*/
+
+      - deploy-main:
+          context: sf-prod
+          tag_prefix: << pipeline.git.branch >>
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
