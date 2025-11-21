@@ -101,22 +101,30 @@ jobs:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
+      
+            # Auto-detect Salesforce project root
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            echo "Detected project directory: $PROJECT_DIR"
+            cd "$PROJECT_DIR"
+      
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
+      
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
-
+              | sed -E 's#.*(force-app/.*)#\1#' \
+              > files.txt || true
+      
             if [ -s files.txt ]; then
               echo "Changes detected:"
               cat files.txt
-              sf project generate manifest -p $(cat files.txt)
+              mapfile -t manifest_paths < files.txt
+              sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
               echo "No changes detected."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
+
 
       # --------------------------------------------------------
       # Deploy
@@ -125,18 +133,21 @@ jobs:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-
+      
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "Skipping deploy — no delta changes"
               exit 0
             fi
-
-            echo "Deploying package.xml to org: target"
+      
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+      
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
+
 
       # --------------------------------------------------------
       # Create New Tag
@@ -146,20 +157,22 @@ jobs:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
+      
             if [ "$CHANGES_FOUND" = "true" ]; then
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+      
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-
-              echo "Creating and pushing new tag: $newTag"
-
+      
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-
+      
               git tag "$newTag"
               git push origin "$newTag"
             else
               echo "No changes — skipping tag creation."
             fi
+
 
 # ============================================================
 # WORKFLOW → AUTOMATIC ENVIRONMENT SELECTION
