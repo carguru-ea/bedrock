@@ -47,7 +47,9 @@ jobs:
     steps:
       - checkout
 
+      # --------------------------------------------------------
       # Tooling
+      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -57,7 +59,9 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-      # 🔥 DYNAMIC JWT AUTH (INTQA or STAGINGUAT or PROD)
+      # --------------------------------------------------------
+      # Dynamic JWT Authentication
+      # --------------------------------------------------------
       - jwt-auth:
           target_env: << parameters.target_env >>
 
@@ -68,6 +72,7 @@ jobs:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
+            echo "Using Tag Prefix: $TAG_PREFIX"
 
             git fetch --tags
             currentRef=0
@@ -77,22 +82,27 @@ jobs:
             if [ -n "$tags" ]; then
               for tag in $tags; do
                 refNum=$(echo $tag | cut -d '-' -f 2)
-                if test "$refNum" -gt "$currentRef"; then
+                if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
+              echo "Latest Tag Found: ${TAG_PREFIX}${currentRef}"
+            else
+              echo "No tags found for prefix: $TAG_PREFIX"
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
       # --------------------------------------------------------
-      # Delta Manifest Build
+      # Build Delta Manifest
       # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
+
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
 
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep '^force-app/' > files.txt || true
@@ -103,6 +113,7 @@ jobs:
               sf project generate manifest -p $(cat files.txt)
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
+              echo "No changes detected."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
@@ -110,15 +121,16 @@ jobs:
       # Deploy
       # --------------------------------------------------------
       - run:
-          name: Deploy Changes
+          name: Deploy Metadata
           command: |
             source $BASH_ENV
 
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "No delta found — skipping deploy"
+              echo "Skipping deploy — no delta changes"
               exit 0
             fi
 
+            echo "Deploying package.xml to org: target"
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
@@ -126,7 +138,7 @@ jobs:
               --wait 360
 
       # --------------------------------------------------------
-      # Tag Creation
+      # Create New Tag
       # --------------------------------------------------------
       - run:
           name: Create & Push New Tag
@@ -136,8 +148,16 @@ jobs:
 
             if [ "$CHANGES_FOUND" = "true" ]; then
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
+
+              echo "Creating and pushing new tag: $newTag"
+
+              git config user.email "circleci@example.com"
+              git config user.name "CircleCI"
+
               git tag "$newTag"
               git push origin "$newTag"
+            else
+              echo "No changes — skipping tag creation."
             fi
 
 # ============================================================
