@@ -3,10 +3,27 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# ============================================================  
+# ============================================================
 # COMMANDS
 # ============================================================
 commands:
+  install-tooling:
+    steps:
+  # --------------------------------------------------------
+  # Tooling
+  # --------------------------------------------------------
+      - node/install:
+          node-version: "20"
+
+      - run:
+          name: Install SF CLI
+          command: |
+            npm install -g @salesforce/cli
+            sf --version
+
+  # ----------------------------------------------------------
+  # JWT Authentication
+  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -15,8 +32,7 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
-              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
@@ -30,44 +46,15 @@ commands:
               --alias target \
               --set-default
 
-# ============================================================
-# GENERIC DELTA DEPLOY JOB (dynamic org + tags)
-# ============================================================
-jobs:
-  delta-deploy:
+  deploy-with-tags:
     parameters:
-      target_env:
-        type: string
       tag_prefix:
         type: string
-
-    docker:
-      - image: cimg/base:stable
-
     steps:
-      - checkout
 
-      # --------------------------------------------------------
-      # Tooling
-      # --------------------------------------------------------
-      - node/install:
-          node-version: "20"
-
-      - run:
-          name: Install SF CLI
-          command: |
-            npm install -g @salesforce/cli
-            sf --version
-
-      # --------------------------------------------------------
-      # Dynamic JWT Authentication
-      # --------------------------------------------------------
-      - jwt-auth:
-          target_env: << parameters.target_env >>
-
-      # --------------------------------------------------------
-      # Find Most Recent Tag
-      # --------------------------------------------------------
+      # ------------------------------------------------------
+      # Identify most recent tag
+      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -198,38 +185,85 @@ jobs:
               echo "No changes — skipping tag creation."
             fi
 
+# ============================================================
+# JOBS PER ORG
+# ============================================================
+jobs:
+
+  deploy-intqa:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+  deploy-staging:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+
+  deploy-main:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
 
 # ============================================================
-# WORKFLOW → AUTOMATIC ENVIRONMENT SELECTION
+# WORKFLOWS (BRANCH → ENVIRONMENT)
 # ============================================================
 workflows:
   version: 2
-  deploy-by-branch:
+
+  build-test-deploy:
     jobs:
 
-      # BRInt → INTQA
-      - delta-deploy:
+      - deploy-intqa:
           context: sf-intqa
-          target_env: "INTQA"
-          tag_prefix: "INTQA-"
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
-      # BRStaging → STAGINGUAT
-      - delta-deploy:
+      - deploy-staging:
           context: sf-staging
-          target_env: "STAGINGUAT"
-          tag_prefix: "STAGINGUAT-"
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: BRStaging
+            tags:
+              ignore: /.*/
 
-      # main → PROD
-      - delta-deploy:
+      - deploy-main:
           context: sf-prod
-          target_env: "PROD"
-          tag_prefix: "PROD-"
+          tag_prefix: << pipeline.git.branch >>
           filters:
             branches:
               only: main
+            tags:
+              ignore: /.*/
