@@ -7,24 +7,6 @@ orbs:
 # COMMANDS
 # ============================================================
 commands:
-
-  # ----------------------------------------------------------
-  # Install Salesforce CLI + Java (NO parameters)
-  # ----------------------------------------------------------
-  install-tooling:
-    steps:
-      - node/install:
-          node-version: "20"
-
-      - run:
-          name: Install SF CLI
-          command: |
-            npm install -g @salesforce/cli
-            sf --version
-
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -33,7 +15,8 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
@@ -47,23 +30,50 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # FULL DELTA DEPLOY LOGIC (tag-based deployment)
-  # ----------------------------------------------------------
-  deploy-with-tags:
+# ============================================================
+# GENERIC DELTA DEPLOY JOB (dynamic org + tags)
+# ============================================================
+jobs:
+  delta-deploy:
     parameters:
+      target_env:
+        type: string
       tag_prefix:
         type: string
+
+    docker:
+      - image: cimg/base:stable
+
     steps:
+      - checkout
+
+      # --------------------------------------------------------
+      # Tooling
+      # --------------------------------------------------------
+      - node/install:
+          node-version: "20"
 
       - run:
-          name: Print Tag Prefix
-          command: echo "Using Tag Prefix: << parameters.tag_prefix >>"
+          name: Install SF CLI
+          command: |
+            npm install -g @salesforce/cli
+            sf --version
 
+      # --------------------------------------------------------
+      # Dynamic JWT Authentication
+      # --------------------------------------------------------
+      - jwt-auth:
+          target_env: << parameters.target_env >>
+
+      # --------------------------------------------------------
+      # Find Most Recent Tag
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
+            echo "Using Tag Prefix: $TAG_PREFIX"
+
             git fetch --tags
             currentRef=0
 
@@ -76,28 +86,34 @@ commands:
                   currentRef=$refNum
                 fi
               done
-              echo "Latest Tag: ${TAG_PREFIX}${currentRef}"
+              echo "Latest Tag Found: ${TAG_PREFIX}${currentRef}"
             else
-              echo "No tags found."
+              echo "No tags found for prefix: $TAG_PREFIX"
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
+      # --------------------------------------------------------
+      # Build Delta Manifest
+      # --------------------------------------------------------
       - run:
-          name: Build Manifest (Delta)
+          name: Build Manifest
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
+      
+            # Auto-detect Salesforce project root
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-
-            echo "Diff against: ${TAG_PREFIX}${CURRENT_REF}"
-
+      
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
+      
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
+              | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-
+      
             if [ -s files.txt ]; then
               echo "Changes detected:"
               cat files.txt
@@ -109,123 +125,86 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+
+      # --------------------------------------------------------
+      # Deploy
+      # --------------------------------------------------------
       - run:
-          name: Deploy to Org
+          name: Deploy Metadata
           command: |
             source $BASH_ENV
+      
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "Skipping deploy — no delta changes"
               exit 0
             fi
-
+      
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
+      
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
 
+
+      # --------------------------------------------------------
+      # Create New Tag
+      # --------------------------------------------------------
       - run:
-          name: Create New Tag
+          name: Create & Push New Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
+      
             if [ "$CHANGES_FOUND" = "true" ]; then
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+      
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-
+      
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-
+      
               git tag "$newTag"
               git push origin "$newTag"
             else
-              echo "Skipping tag creation — no changes"
+              echo "No changes — skipping tag creation."
             fi
 
 
 # ============================================================
-# JOBS PER ORG
-# ============================================================
-jobs:
-
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-
-# ============================================================
-# WORKFLOWS
+# WORKFLOW → AUTOMATIC ENVIRONMENT SELECTION
 # ============================================================
 workflows:
   version: 2
-
-  build-test-deploy:
+  deploy-by-branch:
     jobs:
 
-      - deploy-intqa:
+      # BRInt → INTQA
+      - delta-deploy:
           context: sf-intqa
-          tag_prefix: << pipeline.git.branch >>
+          target_env: "INTQA"
+          tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
 
-      - deploy-staging:
+      # BRStaging → STAGINGUAT
+      - delta-deploy:
           context: sf-staging
-          tag_prefix: << pipeline.git.branch >>
+          target_env: "STAGINGUAT"
+          tag_prefix: "STAGINGUAT-"
           filters:
             branches:
               only: BRStaging
-            tags:
-              ignore: /.*/
 
-      - deploy-main:
+      # main → PROD
+      - delta-deploy:
           context: sf-prod
-          tag_prefix: << pipeline.git.branch >>
+          target_env: "PROD"
+          tag_prefix: "PROD-"
           filters:
             branches:
               only: main
-            tags:
-              ignore: /.*/
