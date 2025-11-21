@@ -105,7 +105,8 @@ jobs:
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
 
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
-              | grep '^force-app/' > files.txt || true
+              | grep 'force-app/' \
+              | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
               echo "Changes detected:"
