@@ -208,7 +208,7 @@ workflows:
     jobs:
 
       # BRInt → INTQA
-      - delta-deploy:
+      - deploy-intqa:
           context: sf-intqa
           target_env: "INTQA"
           tag_prefix: "INTQA-"
@@ -217,7 +217,7 @@ workflows:
               only: BRInt
 
       # BRStaging → STAGINGUAT
-      - delta-deploy:
+      - deploy-BRStaging:
           context: sf-staging
           target_env: "STAGINGUAT"
           tag_prefix: "STAGINGUAT-"
@@ -226,7 +226,7 @@ workflows:
               only: BRStaging
 
       # main → PROD
-      - delta-deploy:
+      - deploy-main:
           context: sf-prod
           target_env: "PROD"
           tag_prefix: "PROD-"
