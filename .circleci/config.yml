@@ -71,6 +71,12 @@ commands:
       tag_prefix:
         type: string
     steps:
+      - run:
+          name: Deploy With Tags Placeholder
+          command: |
+            echo "Executing deploy-with-tags..."
+            echo "Tag Prefix = << parameters.tag_prefix >>"
+
       # --------------------------------------------------------
       # Tooling
       # --------------------------------------------------------
