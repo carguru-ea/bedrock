@@ -1,5 +1,5 @@
 /**
- * @description Utility class for Account operatis d
+ * @description Utility class for Account operatis ds
  */
 public class AccountUtility {
     
