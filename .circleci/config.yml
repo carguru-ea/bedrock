@@ -135,9 +135,23 @@ jobs:
             source $BASH_ENV
       
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "Skipping deploy — no delta changes"
-              exit 0
+              echo "⚠️ No delta detected — performing FULL DEPLOY"
+            
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+            
+              # Generate full package.xml from sfdx-project.json
+              echo "Generating full package.xml..."
+              sf project generate manifest --source-dir force-app > /dev/null
+            
+              echo "Full package.xml generated:"
+              cat package.xml
+            
+              FULL_DEPLOY="true"
+            else
+              FULL_DEPLOY="false"
             fi
+
       
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
