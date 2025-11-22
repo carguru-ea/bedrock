@@ -3,7 +3,7 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# ============================================================
+# ============================================================ 
 # COMMANDS
 # ============================================================
 commands:
@@ -57,16 +57,16 @@ commands:
     steps:
 
       # --------------------------------------------------------
-      # CANCEL ACTIVE SALESFORCE DEPLOYS
+      # Check & Cancel Pending/InProgress Deployments
       # --------------------------------------------------------
       - run:
-          name: Cancel Active Salesforce Deploys
+          name: Cancel Existing Deploys
           command: |
-            echo "🔍 Checking for active deployments by 'ravitej varada'..."
+            echo "🔍 Checking for active deployments by 'ravitej varada'"
 
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
-             FROM DeployRequest
+             FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
                AND CreatedBy.Name = 'ravitej varada'
              ORDER BY CreatedDate DESC" --json)
@@ -78,47 +78,51 @@ commands:
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
-              echo "⚠️ Active deployments found — canceling..."
+              echo "⚠️ Deployments found — canceling..."
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
                 sf project deploy cancel --job-id "$deployId"
               done
-              echo "✔️ All active deployments canceled."
+              echo "✔️ All deployments canceled."
             fi
 
       # --------------------------------------------------------
-      # FIND MOST RECENT TAG
+      # Identify most recent tag
       # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
-            echo "Using tag prefix: $TAG_PREFIX"
-
+            echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
-            currentRef=0
 
+            currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
-                num=$(echo "$tag" | cut -d '-' -f 2)
-                if [ "$num" -gt "$currentRef" ]; then
-                  currentRef=$num
+                refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
+                if [ "$refNum" -gt "$currentRef" ]; then
+                  currentRef=$refNum
                 fi
               done
               echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "No tags found — starting at 0"
+              echo "🔍 No tags found — FIRST RUN"
+              currentRef=0
+              echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
+
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
       # --------------------------------------------------------
-      # BUILD MANIFEST WITH DELTA FIX
+      # Build Delta Manifest
       # --------------------------------------------------------
       - run:
-          name: Build Delta Manifest
+          name: Build Manifest
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
@@ -126,33 +130,26 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$CURRENT_REF" -eq 0 ]; then
-              echo "⚠️ No tags found — using first commit as baseline"
-              BASE_REF=$(git rev-list --max-parents=0 HEAD)
-            else
-              BASE_REF="${TAG_PREFIX}${CURRENT_REF}"
-            fi
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
 
-            echo "Comparing HEAD to BASE_REF: $BASE_REF"
-
-            git diff --diff-filter=ACMR --name-only "$BASE_REF" HEAD \
+            git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
 
             if [ -s files.txt ]; then
-              echo "Delta detected:"
+              echo "Changes detected:"
               cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes detected — FULL DEPLOY required."
+              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
       # --------------------------------------------------------
-      # DEPLOY (DELTA OR FULL)
+      # Deploy (Delta or Full)
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
@@ -162,47 +159,74 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "📦 Running FULL DEPLOY..."
-              sf project generate manifest --source-dir force-app > /dev/null
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+
+            # --------------------------
+            # Decide deploy type
+            # --------------------------
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "🔄 DELTA deploy"
+              DEPLOY_TYPE="DELTA"
+
             else
-              echo "📦 Running DELTA DEPLOY..."
+              # No delta
+              if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+                DEPLOY_TYPE="FULL_FIRST_RUN"
+              else
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
+                DEPLOY_TYPE="FULL_NO_TAG"
+              fi
+
+              sf project generate manifest --source-dir force-app > /dev/null
             fi
 
+            # --------------------------
+            # Run Deployment
+            # --------------------------
+            echo "🚀 Running $DEPLOY_TYPE deployment..."
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
 
+
       # --------------------------------------------------------
-      # TAG CREATION
+      # Create New Tag
       # --------------------------------------------------------
       - run:
-          name: Create & Push New Tag
+          name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-
+            # Determine whether to create a tag
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
+
+              if [ "$FIRST_RUN" = "true" ]; then
+                newTag="${TAG_PREFIX}1"
+              else
+                newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
+              fi
 
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
 
               git tag "$newTag"
               git push origin "$newTag"
-
               echo "✔️ Created tag: $newTag"
+
             else
-              echo "ℹ️ No new tag required."
+              echo "No changes — skipping tag creation."
             fi
 
+
 # ============================================================
-# JOBS
+# JOBS PER ORG
 # ============================================================
 jobs:
 
