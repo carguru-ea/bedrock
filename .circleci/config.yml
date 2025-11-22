@@ -9,9 +9,6 @@ orbs:
 commands:
   install-tooling:
     steps:
-      # --------------------------------------------------------
-      # Tooling
-      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -21,9 +18,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -46,18 +40,11 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # Deploy with Tags
-  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
     steps:
-
-      # ------------------------------------------------------
-      # Identify most recent tag
-      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -83,101 +70,63 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-      
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-      
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-      
+
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes detected."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy
-      # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-      
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta detected — performing FULL DEPLOY"
-            
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-            
-              echo "Generating full package.xml..."
-              sf project generate manifest --source-dir force-app > /dev/null
-              cat package.xml
-            
-              FULL_DEPLOY="true"
-            else
-              FULL_DEPLOY="false"
-            fi
-
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-      
-            if [ "$FULL_DEPLOY" = "true" ]; then
-              echo "🚀 Running FULL DEPLOY..."
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
+
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "Running delta deploy"
             else
-              echo "🚀 Running DELTA DEPLOY..."
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
+              echo "No delta, running full deploy"
+              sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-      # --------------------------------------------------------
-      # Create New Tag
-      # --------------------------------------------------------
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level RunLocalTests \
+              --wait 360
+
       - run:
           name: Create & Push New Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             if [ "$CHANGES_FOUND" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-      
+
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-      
+
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-      
               git tag "$newTag"
               git push origin "$newTag"
-            else
-              echo "No changes — skipping tag creation."
             fi
 
 
@@ -200,6 +149,16 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ---------------------------
+      # Cleanup ON FAIL / CANCEL
+      # ---------------------------
+      - run:
+          name: Cleanup on Failure or Cancel
+          when: on_fail
+          command: |
+            echo "🛑 CLEANUP TRIGGERED for INTQA — job failed or pipeline canceled"
+            echo "This confirms cleanup logic works."
+
   deploy-staging:
     parameters:
       tag_prefix:
@@ -213,6 +172,12 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+
+      - run:
+          name: Cleanup on Failure or Cancel
+          when: on_fail
+          command: |
+            echo "🛑 CLEANUP TRIGGERED for STAGING — job failed or pipeline canceled"
 
   deploy-main:
     parameters:
@@ -228,23 +193,11 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-  # ============================================================
-  # SHARED CLEANUP JOB (RUNS ON FAIL OR CANCEL)
-  # ============================================================
-  cleanup:
-    parameters:
-      env:
-        type: string
-    docker:
-      - image: cimg/base:stable
-    steps:
       - run:
-          name: "Cleanup Handler (on_fail)"
+          name: Cleanup on Failure or Cancel
+          when: on_fail
           command: |
-            echo "🛑 CLEANUP JOB TRIGGERED VIA on_fail"
-            echo "Environment: << parameters.env >>"
-            echo "Pipeline was FAILED or CANCELED."
-            echo "STATUS TEST: on_fail works correctly."
+            echo "🛑 CLEANUP TRIGGERED for PROD — job failed or pipeline canceled"
 
 
 # ============================================================
@@ -262,18 +215,6 @@ workflows:
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
-
-      - cleanup:
-          env: "INTQA"
-          requires:
-            - deploy-intqa
-          when: on_fail
-          filters:
-            branches:
-              only: BRInt
-
 
       - deploy-staging:
           context: sf-staging
@@ -281,33 +222,10 @@ workflows:
           filters:
             branches:
               only: BRStaging
-            tags:
-              ignore: /.*/
-
-      - cleanup:
-          env: "STAGINGUAT"
-          requires:
-            - deploy-staging
-          when: on_fail
-          filters:
-            branches:
-              only: BRStaging
-
 
       - deploy-main:
           context: sf-prod
           tag_prefix: "PROD-"
-          filters:
-            branches:
-              only: main
-            tags:
-              ignore: /.*/
-
-      - cleanup:
-          env: "PROD"
-          requires:
-            - deploy-main
-          when: on_fail
           filters:
             branches:
               only: main
