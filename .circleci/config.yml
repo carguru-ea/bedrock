@@ -243,7 +243,7 @@ workflows:
 
       - deploy-intqa:
           context: sf-intqa
-          tag_prefix: << pipeline.git.branch >>
+          tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
@@ -252,7 +252,7 @@ workflows:
 
       - deploy-staging:
           context: sf-staging
-          tag_prefix: << pipeline.git.branch >>
+          tag_prefix: "STAGINGUAT-"
           filters:
             branches:
               only: BRStaging
@@ -261,7 +261,7 @@ workflows:
 
       - deploy-main:
           context: sf-prod
-          tag_prefix: << pipeline.git.branch >>
+          tag_prefix: "PROD-"
           filters:
             branches:
               only: main
