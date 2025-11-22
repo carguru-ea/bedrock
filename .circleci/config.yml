@@ -8,11 +8,12 @@ orbs:
 # COMMANDS
 # ============================================================
 commands:
+
   install-tooling:
     steps:
-  # --------------------------------------------------------
-  # Tooling
-  # --------------------------------------------------------
+      # --------------------------------------------------------
+      # Tooling
+      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -47,6 +48,9 @@ commands:
               --alias target \
               --set-default
 
+  # ----------------------------------------------------------
+  # DEPLOY WITH TAGS
+  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
@@ -82,7 +86,7 @@ commands:
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
       # --------------------------------------------------------
-      # Build Manifest
+      # Build Delta Manifest
       # --------------------------------------------------------
       - run:
           name: Build Manifest
@@ -199,24 +203,6 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # ✅ SLACK SUCCESS
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            🚀 *INTQA Deployment SUCCESS!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
-
-      # ❌ SLACK FAILURE
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            ❌ *INTQA Deployment FAILED!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
-
   deploy-staging:
     parameters:
       tag_prefix:
@@ -231,23 +217,6 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # Slack messages
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            🚀 *STAGING Deployment SUCCESS!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
-
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            ❌ *STAGING Deployment FAILED!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
-
   deploy-main:
     parameters:
       tag_prefix:
@@ -261,27 +230,6 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-
-      # SUCCESS
-      - run:
-          name: Slack Success Message
-          when: on_success
-          command: |
-            SLACK_TEXT="🚀 Deployment SUCCESS to INTQA on branch *${CIRCLE_BRANCH}*\n<${CIRCLE_BUILD_URL}|Open Pipeline>"
-            curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\": \"$SLACK_TEXT\"}" \
-            $SLACK_WEBHOOK_URL
-
-      # FAILURE
-      - run:
-          name: Slack Failure Message
-          when: on_fail
-          command: |
-            SLACK_TEXT="❌ Deployment FAILED to INTQA on branch *${CIRCLE_BRANCH}*\n<${CIRCLE_BUILD_URL}|Open Pipeline>"
-            curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\": \"$SLACK_TEXT\"}" \
-            $SLACK_WEBHOOK_URL
-
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
@@ -318,3 +266,35 @@ workflows:
               only: main
             tags:
               ignore: /.*/
+
+    # ---------------------------------------------------------
+    # SLACK NOTIFICATION (RUNS ONCE PER PIPELINE)
+    # ---------------------------------------------------------
+    post-steps:
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "text": ":rotating_light: *Pipeline Failed*",
+              "attachments": [
+                {
+                  "color": "danger",
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nView Pipeline: ${CIRCLE_PIPELINE_URL}"
+                }
+              ]
+            }
+
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "text": ":white_check_mark: *Pipeline Succeeded*",
+              "attachments": [
+                {
+                  "color": "good",
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nView Pipeline: ${CIRCLE_PIPELINE_URL}"
+                }
+              ]
+            }
