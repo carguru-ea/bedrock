@@ -9,6 +9,9 @@ orbs:
 commands:
   install-tooling:
     steps:
+      # --------------------------------------------------------
+      # Tooling
+      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -18,6 +21,9 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
+  # ----------------------------------------------------------
+  # JWT Authentication
+  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -40,11 +46,18 @@ commands:
               --alias target \
               --set-default
 
+  # ----------------------------------------------------------
+  # Deploy with Tags (delta + full fallback)
+  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
     steps:
+
+      # ------------------------------------------------------
+      # Identify most recent tag
+      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -70,120 +83,112 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
+      # --------------------------------------------------------
+      # Build Delta Manifest
+      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
+            set -e
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
+      
+            # Auto-detect Salesforce project root
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-
+      
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
+      
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-
+      
             if [ -s files.txt ]; then
+              echo "Changes detected:"
+              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
+              echo "No changes detected."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+      # --------------------------------------------------------
+      # Deploy
+      # --------------------------------------------------------
       - run:
-          name: Advanced Cancel-Protected Salesforce Deployment
+          name: Deploy Metadata
           command: |
             set -e
+            source $BASH_ENV
+      
+            # Always locate project root
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            echo "Using project directory: $PROJECT_DIR"
+            cd "$PROJECT_DIR"
 
-            echo "=== PREPARING CANCEL-PROTECTED SF DEPLOY ==="
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No delta detected — performing FULL DEPLOY"
 
-            # ---------------------------------------------------------
-            # 1. Trap CANCEL (SIGTERM from CircleCI)
-            # ---------------------------------------------------------
-            trap '
-              echo "🔥 CircleCI Cancel Detected — Attempting to Cancel Deployment in Salesforce";
-              if [ -f deploy_id.txt ]; then
-                DEPLOY_ID=$(cat deploy_id.txt)
-                echo "Canceling deployment ID: $DEPLOY_ID"
-                sf deploy:cancel --target-org target -i "$DEPLOY_ID" || true
-              fi
-              exit 1
-            ' TERM INT
+              # Generate full package.xml from sfdx-project.json
+              echo "Generating full package.xml..."
+              sf project generate manifest --source-dir force-app > /dev/null
 
-            # ---------------------------------------------------------
-            # 2. Start Deployment in Background & Capture ID
-            # ---------------------------------------------------------
-            echo "🚀 Starting Salesforce Deployment in Background..."
+              echo "Full package.xml generated:"
+              cat package.xml
 
-            # Start deployment in background (no JSON!)
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level RunLocalTests &
-            DEPLOY_PID=$!
-            
-            echo "Background PID = $DEPLOY_PID"
-            sleep 10   # give Salesforce time to register deploy
-            
-            # Query Salesforce for the most recent deploy job
-            DEPLOY_ID=$(sf deploy:list --json | jq -r '.result[0].id')
-            echo "Captured Deploy ID: $DEPLOY_ID"
-            
-            echo "$DEPLOY_ID" > deploy_id.txt
-
-            echo "$DEPLOY_ID" > deploy_id.txt
-            echo "Captured Deploy ID: $DEPLOY_ID"
-
-            # ---------------------------------------------------------
-            # 3. Start monitor watcher to detect early exits
-            # ---------------------------------------------------------
-            (
-              while kill -0 $DEPLOY_PID 2>/dev/null; do
-                echo "⏳ Deployment running... monitoring..."
-                sleep 10
-              done
-              echo "Background deploy finished normally."
-            ) &
-            MONITOR_PID=$!
-
-            # ---------------------------------------------------------
-            # 4. Wait for the actual deploy process
-            # ---------------------------------------------------------
-            wait $DEPLOY_PID || DEPLOY_EXIT=$?
-
-            # ---------------------------------------------------------
-            # 5. Final Handling
-            # ---------------------------------------------------------
-            if [ "$DEPLOY_EXIT" != "" ]; then
-              echo "❌ Deployment process ended with failure (exit code $DEPLOY_EXIT)."
-              exit $DEPLOY_EXIT
+              FULL_DEPLOY="true"
+            else
+              echo "✅ Delta detected — using delta package.xml"
+              FULL_DEPLOY="false"
+            fi
+      
+            if [ "$FULL_DEPLOY" = "true" ]; then
+              echo "🚀 Running FULL DEPLOY..."
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+            else
+              echo "🚀 Running DELTA DEPLOY..."
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
             fi
 
-            echo "✅ Deployment completed successfully."
-
-
+      # --------------------------------------------------------
+      # Create New Tag
+      # --------------------------------------------------------
       - run:
           name: Create & Push New Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
+      
             if [ "$CHANGES_FOUND" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-
+      
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-
+      
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
+      
               git tag "$newTag"
               git push origin "$newTag"
+            else
+              echo "No changes — skipping tag creation."
             fi
 
 
 # ============================================================
-# JOBS
+# JOBS PER ORG
 # ============================================================
 jobs:
 
@@ -201,15 +206,13 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # ---------------------------
-      # Cleanup ON FAIL / CANCEL
-      # ---------------------------
+      # --- Cleanup / observability on failure or cancel ---
       - run:
-          name: Cleanup on Failure or Cancel
+          name: Cleanup on Failure or Cancel (INTQA)
           when: on_fail
           command: |
-            echo "🛑 CLEANUP TRIGGERED for INTQA — job failed or pipeline canceled"
-            echo "This confirms cleanup logic works."
+            echo "🛑 CLEANUP TRIGGERED for INTQA — job failed or pipeline may have been canceled."
+            echo "You can add 'sf deploy cancel' here if supported by your sf CLI version."
 
   deploy-staging:
     parameters:
@@ -226,10 +229,10 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
       - run:
-          name: Cleanup on Failure or Cancel
+          name: Cleanup on Failure or Cancel (STAGING)
           when: on_fail
           command: |
-            echo "🛑 CLEANUP TRIGGERED for STAGING — job failed or pipeline canceled"
+            echo "🛑 CLEANUP TRIGGERED for STAGING — job failed or pipeline may have been canceled."
 
   deploy-main:
     parameters:
@@ -246,14 +249,14 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
       - run:
-          name: Cleanup on Failure or Cancel
+          name: Cleanup on Failure or Cancel (PROD)
           when: on_fail
           command: |
-            echo "🛑 CLEANUP TRIGGERED for PROD — job failed or pipeline canceled"
+            echo "🛑 CLEANUP TRIGGERED for PROD — job failed or pipeline may have been canceled."
 
 
 # ============================================================
-# WORKFLOWS
+# WORKFLOWS (BRANCH → ENVIRONMENT)
 # ============================================================
 workflows:
   version: 2
@@ -267,6 +270,8 @@ workflows:
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -274,6 +279,8 @@ workflows:
           filters:
             branches:
               only: BRStaging
+            tags:
+              ignore: /.*/
 
       - deploy-main:
           context: sf-prod
@@ -281,3 +288,5 @@ workflows:
           filters:
             branches:
               only: main
+            tags:
+              ignore: /.*/
