@@ -11,9 +11,6 @@ commands:
 
   install-tooling:
     steps:
-      # --------------------------------------------------------
-      # Tooling
-      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -23,9 +20,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -48,18 +42,12 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # DEPLOY WITH TAGS
-  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
     steps:
 
-      # ------------------------------------------------------
-      # Identify most recent tag
-      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -85,9 +73,6 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -95,10 +80,7 @@ commands:
             TAG_PREFIX="<< parameters.tag_prefix >>"
       
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-      
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
       
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
@@ -106,53 +88,36 @@ commands:
               > files.txt || true
       
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes detected."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy
-      # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
       
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
             if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta detected — performing FULL DEPLOY"
-            
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-            
-              echo "Generating full package.xml..."
+              echo "No changes detected — FULL DEPLOY"
               sf project generate manifest --source-dir force-app > /dev/null
-            
-              echo "Full package.xml generated:"
-              cat package.xml
-            
               FULL_DEPLOY="true"
             else
               FULL_DEPLOY="false"
             fi
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
       
             if [ "$FULL_DEPLOY" = "true" ]; then
-              echo "🚀 Running FULL DEPLOY..."
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunLocalTests \
                 --wait 360
             else
-              echo "🚀 Running DELTA DEPLOY..."
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
@@ -160,9 +125,6 @@ commands:
                 --wait 360
             fi
 
-      # --------------------------------------------------------
-      # Create New Tag
-      # --------------------------------------------------------
       - run:
           name: Create & Push New Tag
           command: |
@@ -181,7 +143,7 @@ commands:
               git tag "$newTag"
               git push origin "$newTag"
             else
-              echo "No changes — skipping tag creation."
+              echo "Skipping tag creation — no changes found."
             fi
 
 # ============================================================
@@ -231,8 +193,42 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+  # ----------------------------------------------------------
+  # FINAL SLACK JOB (RUNS ONCE)
+  # ----------------------------------------------------------
+  slack-notify:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "text": ":rotating_light: *Pipeline Failed*",
+              "attachments": [
+                {
+                  "color": "danger",
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                }
+              ]
+            }
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "text": ":white_check_mark: *Pipeline Succeeded*",
+              "attachments": [
+                {
+                  "color": "good",
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                }
+              ]
+            }
+
 # ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT)
+# WORKFLOWS
 # ============================================================
 workflows:
   version: 2
@@ -246,8 +242,6 @@ workflows:
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -255,8 +249,6 @@ workflows:
           filters:
             branches:
               only: BRStaging
-            tags:
-              ignore: /.*/
 
       - deploy-main:
           context: sf-prod
@@ -264,37 +256,10 @@ workflows:
           filters:
             branches:
               only: main
-            tags:
-              ignore: /.*/
 
-    # ---------------------------------------------------------
-    # SLACK NOTIFICATION (RUNS ONCE PER PIPELINE)
-    # ---------------------------------------------------------
-    post-steps:
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "text": ":rotating_light: *Pipeline Failed*",
-              "attachments": [
-                {
-                  "color": "danger",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nView Pipeline: ${CIRCLE_PIPELINE_URL}"
-                }
-              ]
-            }
-
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "text": ":white_check_mark: *Pipeline Succeeded*",
-              "attachments": [
-                {
-                  "color": "good",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\n\nView Pipeline: ${CIRCLE_PIPELINE_URL}"
-                }
-              ]
-            }
+      # FINAL NOTIFICATION JOB (depends on all)
+      - slack-notify:
+          requires:
+            - deploy-intqa
+            - deploy-staging
+            - deploy-main
