@@ -23,6 +23,7 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
+
   # --------------------------------------------------------
   # JWT Authentication
   # --------------------------------------------------------
@@ -90,18 +91,18 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-      
+
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-      
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-      
+
             if [ -s files.txt ]; then
               echo "Changes detected:"
               cat files.txt
@@ -118,27 +119,27 @@ commands:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-      
+
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "⚠️ No delta detected — performing FULL DEPLOY"
-            
+
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-            
+
               echo "Generating full package.xml..."
               sf project generate manifest --source-dir force-app > /dev/null
-            
+
               echo "Full package.xml generated:"
               cat package.xml
-            
+
               FULL_DEPLOY="true"
             else
               FULL_DEPLOY="false"
             fi
-      
+
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-      
+
             if [ "$FULL_DEPLOY" = "true" ]; then
               echo "🚀 Running FULL DEPLOY..."
               sf project deploy start \
@@ -161,16 +162,16 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             if [ "$CHANGES_FOUND" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-      
+
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-      
+
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-      
+
               git tag "$newTag"
               git push origin "$newTag"
             else
@@ -178,24 +179,23 @@ commands:
             fi
 
 
-# ============================================================
-# SLACK NOTIFICATION COMMAND (SUCCESS + FAILURE)
-# ============================================================
-commands:
+  # --------------------------------------------------------
+  # SLACK NOTIFICATION COMMAND
+  # --------------------------------------------------------
   notify-slack:
     steps:
       - slack/notify:
           channel: $SLACK_DEFAULT_CHANNEL
           event: always
           template: |
-            🚀 *Pipeline Status*: << pipeline.number >>
+            🚀 *Pipeline*: << pipeline.number >>
             *Branch:* << pipeline.git.branch >>
             *Status:* << pipeline.status >>
             🔗 *Link:* << pipeline.url >>
 
 
 # ============================================================
-# JOBS
+# JOBS PER ORG
 # ============================================================
 jobs:
 
@@ -243,7 +243,7 @@ jobs:
 
 
 # ============================================================
-# WORKFLOWS
+# WORKFLOWS (SLACK ONLY ONCE)
 # ============================================================
 workflows:
   version: 2
