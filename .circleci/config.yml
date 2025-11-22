@@ -189,28 +189,16 @@ commands:
           command: |
             echo "export PIPELINE_NUMBER=${CIRCLE_PIPELINE_NUMBER}" >> $BASH_ENV
             echo "export BRANCH=${CIRCLE_BRANCH}" >> $BASH_ENV
+            echo "export JOB_URL=${CIRCLE_BUILD_URL}" >> $BASH_ENV
             source $BASH_ENV
 
       - run:
           name: Create Slack Payload
           command: |
-            cat << EOF > slack.json
+            cat << 'EOF' > slack.json
             {
               "channel": "${SLACK_DEFAULT_CHANNEL}",
-              "attachments": [
-                {
-                  "color": "#36a64f",
-                  "blocks": [
-                    {
-                      "type": "section",
-                      "text": {
-                        "type": "mrkdwn",
-                        "text": ":rocket: *Pipeline* $PIPELINE_NUMBER\n*Branch:* $BRANCH\n*Job:* ${CIRCLE_BUILD_URL}"
-                      }
-                    }
-                  ]
-                }
-              ]
+              "text": ":rocket: *Pipeline* $PIPELINE_NUMBER\n*Branch:* $BRANCH\n:link: $JOB_URL"
             }
             EOF
 
