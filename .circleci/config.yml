@@ -155,6 +155,12 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # BUILD PIPELINE URL (for Slack)
+      - run:
+          name: Build Pipeline URL
+          command: |
+            echo "export PIPELINE_URL=https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}" >> $BASH_ENV
+
       # SLACK: SUCCESS
       - slack/notify:
           event: pass
@@ -165,7 +171,7 @@ jobs:
               "attachments": [
                 {
                   "color": "good",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
@@ -180,7 +186,7 @@ jobs:
               "attachments": [
                 {
                   "color": "danger",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
@@ -202,6 +208,11 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      - run:
+          name: Build Pipeline URL
+          command: |
+            echo "export PIPELINE_URL=https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}" >> $BASH_ENV
+
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
@@ -211,7 +222,7 @@ jobs:
               "attachments": [
                 {
                   "color": "good",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
@@ -225,7 +236,7 @@ jobs:
               "attachments": [
                 {
                   "color": "danger",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
@@ -247,6 +258,11 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      - run:
+          name: Build Pipeline URL
+          command: |
+            echo "export PIPELINE_URL=https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}" >> $BASH_ENV
+
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
@@ -256,7 +272,7 @@ jobs:
               "attachments": [
                 {
                   "color": "good",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
@@ -270,7 +286,7 @@ jobs:
               "attachments": [
                 {
                   "color": "danger",
-                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${CIRCLE_PIPELINE_URL}"
+                  "text": "Project: *${CIRCLE_PROJECT_REPONAME}*\nBranch: *${CIRCLE_BRANCH}*\nPipeline: ${PIPELINE_URL}"
                 }
               ]
             }
