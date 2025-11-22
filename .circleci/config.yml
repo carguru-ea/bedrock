@@ -1,3 +1,8 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.0.2
+
 # ============================================================
 # COMMANDS
 # ============================================================
@@ -27,7 +32,8 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
@@ -54,30 +60,30 @@ commands:
       # Check & Cancel Pending/InProgress Deployments
       # --------------------------------------------------------
       - run:
-          name: Check & Cancel Active Salesforce Deployments
+          name: Cancel Existing Deploys
           command: |
-            echo "🔍 Checking for active deployments created by user 'ravitej varada'..."
+            echo "🔍 Checking for active deployments by 'ravitej varada'"
 
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
-            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal 
+            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
-             WHERE Status IN ('Pending','PendingValidation','InProgress') 
-               AND CreatedBy.Name = 'ravitej varada' 
+             WHERE Status IN ('Pending','PendingValidation','InProgress')
+               AND CreatedBy.Name = 'ravitej varada'
              ORDER BY CreatedDate DESC" --json)
 
             echo "$ACTIVE_DEPLOYS" | jq .
 
             DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
 
-            if [ -z "$DEPLOY_IDS" ]; then
+            if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
-              echo "⚠️ Found active deployments. Canceling now..."
+              echo "⚠️ Deployments found — canceling..."
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
                 sf project deploy cancel --job-id "$deployId"
               done
-              echo "✔️ All active deployments canceled."
+              echo "✔️ All deployments canceled."
             fi
 
       # --------------------------------------------------------
@@ -88,22 +94,21 @@ commands:
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
             echo "Using Tag Prefix: $TAG_PREFIX"
-
             git fetch --tags
-            currentRef=0
 
+            currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
               for tag in $tags; do
-                refNum=$(echo $tag | cut -d '-' -f 2)
+                refNum=$(echo "$tag" | cut -d '-' -f 2)
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
-              echo "Latest Tag Found: ${TAG_PREFIX}${currentRef}"
+              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "No tags found for prefix: $TAG_PREFIX"
+              echo "No tags found — starting at 0"
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
@@ -116,17 +121,17 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-      
+
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-      
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-      
+
             if [ -s files.txt ]; then
               echo "Changes detected:"
               cat files.txt
@@ -134,73 +139,60 @@ commands:
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes detected."
+              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
       # --------------------------------------------------------
-      # Deploy
+      # Deploy (Delta or Full)
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-      
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta detected — performing FULL DEPLOY"
-            
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-              sf project generate manifest --source-dir force-app > /dev/null
-              FULL_DEPLOY="true"
-            else
-              FULL_DEPLOY="false"
-            fi
 
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-      
-            if [ "$FULL_DEPLOY" = "true" ]; then
-              echo "🚀 Running FULL DEPLOY..."
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
+
+            if [ "$CHANGES_FOUND" != "true" ]; then
+              echo "⚠️ No delta — FULL DEPLOY"
+              sf project generate manifest --source-dir force-app > /dev/null
+              DEPLOY_TYPE="FULL"
             else
-              echo "🚀 Running DELTA DEPLOY..."
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
+              DEPLOY_TYPE="DELTA"
             fi
+
+            echo "🚀 Running $DEPLOY_TYPE DEPLOY..."
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level RunLocalTests \
+              --wait 360
 
       # --------------------------------------------------------
       # Create New Tag
       # --------------------------------------------------------
       - run:
-          name: Create & Push New Tag
+          name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             if [ "$CHANGES_FOUND" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-      
+
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-      
+
               git tag "$newTag"
               git push origin "$newTag"
+              echo "✔️ Created tag: $newTag"
             else
               echo "No changes — skipping tag creation."
             fi
-
-
 
 # ============================================================
 # JOBS PER ORG
@@ -250,7 +242,7 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
 # ============================================================
-# WORKFLOWS (BRANCH → ENVIRONMENT)
+# WORKFLOWS
 # ============================================================
 workflows:
   version: 2
@@ -264,8 +256,6 @@ workflows:
           filters:
             branches:
               only: BRInt
-            tags:
-              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -273,8 +263,6 @@ workflows:
           filters:
             branches:
               only: BRStaging
-            tags:
-              ignore: /.*/
 
       - deploy-main:
           context: sf-prod
@@ -282,5 +270,3 @@ workflows:
           filters:
             branches:
               only: main
-            tags:
-              ignore: /.*/
