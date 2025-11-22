@@ -188,10 +188,10 @@ commands:
           channel: $SLACK_DEFAULT_CHANNEL
           event: always
           template: |
-            🚀 *Pipeline*: << pipeline.number >>
+            🚀 *Pipeline:* << pipeline.number >>
             *Branch:* << pipeline.git.branch >>
-            *Status:* << pipeline.status >>
-            🔗 *Link:* << pipeline.url >>
+            🔗 *Pipeline Link:* ${CIRCLE_BUILD_URL}
+
 
 
 # ============================================================
