@@ -3,15 +3,15 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# ============================================================ 
+# ============================================================
 # COMMANDS
-# ============================================================ 
+# ============================================================
 commands:
   install-tooling:
     steps:
-      # --------------------------------------------------------
-      # Tooling
-      # --------------------------------------------------------
+  # --------------------------------------------------------
+  # Tooling
+  # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -46,18 +46,45 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # Deploy with Tags (delta + full fallback)
-  # ----------------------------------------------------------
-  deploy-with-tags:
+    deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
     steps:
 
-      # ------------------------------------------------------
+      # --------------------------------------------------------
+      # Check & Cancel Pending/InProgress Deployments
+      # --------------------------------------------------------
+      - run:
+          name: Check & Cancel Active Salesforce Deployments
+          command: |
+            echo "🔍 Checking for active deployments created by user 'ravitej varada'..."
+
+            ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
+            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal 
+             FROM DeployRequest 
+             WHERE Status IN ('Pending','PendingValidation','InProgress') 
+               AND CreatedBy.Name = 'ravitej varada' 
+             ORDER BY CreatedDate DESC" --json)
+
+            echo "$ACTIVE_DEPLOYS" | jq .
+
+            DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
+
+            if [ -z "$DEPLOY_IDS" ]; then
+              echo "✅ No active deployments found."
+            else
+              echo "⚠️ Found active deployments. Canceling now..."
+              for deployId in $DEPLOY_IDS; do
+                echo "⛔ Canceling deployment: $deployId"
+                sf project deploy cancel --job-id "$deployId"
+              done
+              echo "✔️ All active deployments canceled."
+            fi
+
+      # --------------------------------------------------------
       # Identify most recent tag
-      # ------------------------------------------------------
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -89,11 +116,9 @@ commands:
       - run:
           name: Build Manifest
           command: |
-            set -e
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
       
-            # Auto-detect Salesforce project root
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
@@ -116,35 +141,33 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+
       # --------------------------------------------------------
       # Deploy
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
-            set -e
             source $BASH_ENV
       
-            # Always locate project root
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            echo "Using project directory: $PROJECT_DIR"
-            cd "$PROJECT_DIR"
-
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "⚠️ No delta detected — performing FULL DEPLOY"
-
-              # Generate full package.xml from sfdx-project.json
-              echo "Generating full package.xml..."
+            
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+            
               sf project generate manifest --source-dir force-app > /dev/null
-
+            
               echo "Full package.xml generated:"
               cat package.xml
-
+            
               FULL_DEPLOY="true"
             else
-              echo "✅ Delta detected — using delta package.xml"
               FULL_DEPLOY="false"
             fi
+
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
       
             if [ "$FULL_DEPLOY" = "true" ]; then
               echo "🚀 Running FULL DEPLOY..."
@@ -206,14 +229,6 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # --- Cleanup / observability on failure or cancel ---
-      - run:
-          name: Cleanup on Failure or Cancel (INTQA)
-          when: on_fail
-          command: |
-            echo "🛑 CLEANUP TRIGGERED for INTQA — job failed or pipeline may have been canceled."
-            echo "You can add 'sf deploy cancel' here if supported by your sf CLI version."
-
   deploy-staging:
     parameters:
       tag_prefix:
@@ -228,12 +243,6 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      - run:
-          name: Cleanup on Failure or Cancel (STAGING)
-          when: on_fail
-          command: |
-            echo "🛑 CLEANUP TRIGGERED for STAGING — job failed or pipeline may have been canceled."
-
   deploy-main:
     parameters:
       tag_prefix:
@@ -247,13 +256,6 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-
-      - run:
-          name: Cleanup on Failure or Cancel (PROD)
-          when: on_fail
-          command: |
-            echo "🛑 CLEANUP TRIGGERED for PROD — job failed or pipeline may have been canceled."
-
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
