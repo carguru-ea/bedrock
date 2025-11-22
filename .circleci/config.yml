@@ -203,6 +203,12 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+    post-steps:
+      - run:
+          name: Cancel SF Deployment if Pipeline Stopped
+          command: |
+            echo "🔴 Pipeline was canceled or stopped — cleaning Salesforce deployment"
+            sf deploy cancel --target-org target || true
 
   deploy-staging:
     parameters:
@@ -217,6 +223,12 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+    post-steps:
+      - run:
+          name: Cancel SF Deployment if Pipeline Stopped
+          command: |
+            echo "🔴 Pipeline was canceled or stopped — cleaning Salesforce deployment"
+            sf deploy cancel --target-org target || true
 
   deploy-main:
     parameters:
@@ -231,6 +243,12 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+    post-steps:
+      - run:
+          name: Cancel SF Deployment if Pipeline Stopped
+          command: |
+            echo "🔴 Pipeline was canceled or stopped — cleaning Salesforce deployment"
+            sf deploy cancel --target-org target || true
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
