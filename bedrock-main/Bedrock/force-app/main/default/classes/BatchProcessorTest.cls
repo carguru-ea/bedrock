@@ -1,5 +1,5 @@
 /**
- * @description Test class for BatchProcessor
+ * @description Test class for BatchProcessors
  */
 @IsTest
 public class BatchProcessorTest {
