@@ -189,8 +189,9 @@ commands:
           event: always
           template: |
             {
-              "text": ":rocket: *Pipeline* << pipeline.number >>\n*Branch:* << pipeline.git.branch >>\n*Job:* ${CIRCLE_BUILD_URL}"
+              "text": ":rocket: *Pipeline* << pipeline.number >>\n*Branch:* << pipeline.git.branch >>\n:link: << variables.CIRCLE_BUILD_URL >>"
             }
+
 
 
 
