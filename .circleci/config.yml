@@ -2,6 +2,7 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
+  slack: circleci/slack@4.12.5
 
 # ============================================================
 # COMMANDS
@@ -81,7 +82,7 @@ commands:
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
       # --------------------------------------------------------
-      # Build Delta Manifest
+      # Build Manifest
       # --------------------------------------------------------
       - run:
           name: Build Manifest
@@ -89,7 +90,6 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
       
-            # Auto-detect Salesforce project root
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
@@ -112,7 +112,6 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
       # --------------------------------------------------------
       # Deploy
       # --------------------------------------------------------
@@ -127,7 +126,6 @@ commands:
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
             
-              # Generate full package.xml from sfdx-project.json
               echo "Generating full package.xml..."
               sf project generate manifest --source-dir force-app > /dev/null
             
@@ -139,7 +137,6 @@ commands:
               FULL_DEPLOY="false"
             fi
 
-      
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
       
@@ -158,8 +155,6 @@ commands:
                 --test-level RunLocalTests \
                 --wait 360
             fi
-
-
 
       # --------------------------------------------------------
       # Create New Tag
@@ -204,6 +199,24 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ✅ SLACK SUCCESS
+      - slack/notify:
+          event: pass
+          template: basic_success_1
+          custom: |
+            🚀 *INTQA Deployment SUCCESS!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+
+      # ❌ SLACK FAILURE
+      - slack/notify:
+          event: fail
+          template: basic_fail_1
+          custom: |
+            ❌ *INTQA Deployment FAILED!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+
   deploy-staging:
     parameters:
       tag_prefix:
@@ -218,6 +231,23 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # Slack messages
+      - slack/notify:
+          event: pass
+          template: basic_success_1
+          custom: |
+            🚀 *STAGING Deployment SUCCESS!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+
+      - slack/notify:
+          event: fail
+          template: basic_fail_1
+          custom: |
+            ❌ *STAGING Deployment FAILED!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+
   deploy-main:
     parameters:
       tag_prefix:
@@ -231,6 +261,22 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+
+      - slack/notify:
+          event: pass
+          template: basic_success_1
+          custom: |
+            🚀 *PROD Deployment SUCCESS!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+
+      - slack/notify:
+          event: fail
+          template: basic_fail_1
+          custom: |
+            ❌ *PROD Deployment FAILED!*  
+            • Branch: $CIRCLE_BRANCH  
+            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
