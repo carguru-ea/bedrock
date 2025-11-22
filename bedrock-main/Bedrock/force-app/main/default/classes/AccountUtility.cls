@@ -1,10 +1,10 @@
 /**
- * @description Utility class for Account operatis 
+ * @description Utility class for Account operatis dss
  */
 public class AccountUtility {
     
     /**
-     * @description Get account by ID
+     * @description Get account by IDdd
      * @param accountId The account ID
      * @return Account record
      */
