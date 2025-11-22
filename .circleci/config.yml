@@ -116,18 +116,22 @@ commands:
             # ---------------------------------------------------------
             echo "🚀 Starting Salesforce Deployment in Background..."
 
+            # Start deployment in background (no JSON!)
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
-              --json > deploy_output.json &
-
+              --test-level RunLocalTests &
             DEPLOY_PID=$!
+            
             echo "Background PID = $DEPLOY_PID"
+            sleep 10   # give Salesforce time to register deploy
+            
+            # Query Salesforce for the most recent deploy job
+            DEPLOY_ID=$(sf deploy:list --json | jq -r '.result[0].id')
+            echo "Captured Deploy ID: $DEPLOY_ID"
+            
+            echo "$DEPLOY_ID" > deploy_id.txt
 
-            # Parse deploy ID
-            sleep 2
-            DEPLOY_ID=$(cat deploy_output.json | jq -r '.result.id')
             echo "$DEPLOY_ID" > deploy_id.txt
             echo "Captured Deploy ID: $DEPLOY_ID"
 
