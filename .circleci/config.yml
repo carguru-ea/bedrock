@@ -1,20 +1,15 @@
-version: 2.1
-
-orbs:
-  node: circleci/node@5.0.2
-
 # ============================================================
 # COMMANDS
 # ============================================================
 commands:
+
+  # ----------------------------------------------------------
+  # Install Tooling
+  # ----------------------------------------------------------
   install-tooling:
     steps:
-  # --------------------------------------------------------
-  # Tooling
-  # --------------------------------------------------------
       - node/install:
           node-version: "20"
-
       - run:
           name: Install SF CLI
           command: |
@@ -46,7 +41,10 @@ commands:
               --alias target \
               --set-default
 
-    deploy-with-tags:
+  # ----------------------------------------------------------
+  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
+  # ----------------------------------------------------------
+  deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
@@ -120,7 +118,6 @@ commands:
             TAG_PREFIX="<< parameters.tag_prefix >>"
       
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
       
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
@@ -141,7 +138,6 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
       # --------------------------------------------------------
       # Deploy
       # --------------------------------------------------------
@@ -155,12 +151,7 @@ commands:
             
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-            
               sf project generate manifest --source-dir force-app > /dev/null
-            
-              echo "Full package.xml generated:"
-              cat package.xml
-            
               FULL_DEPLOY="true"
             else
               FULL_DEPLOY="false"
@@ -197,7 +188,7 @@ commands:
             if [ "$CHANGES_FOUND" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-      
+
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
       
               git config user.email "circleci@example.com"
@@ -208,6 +199,7 @@ commands:
             else
               echo "No changes — skipping tag creation."
             fi
+
 
 
 # ============================================================
