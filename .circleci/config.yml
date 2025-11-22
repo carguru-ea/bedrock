@@ -184,13 +184,33 @@ commands:
   # --------------------------------------------------------
   notify-slack:
     steps:
-      - slack/notify:
-          channel: $SLACK_DEFAULT_CHANNEL
-          event: always
-          template: |
+      - run:
+          name: Send Slack Message
+          command: |
+            cat << 'EOF' > slack.json
             {
-              "text": ":rocket: *Pipeline* << pipeline.number >>\n*Branch:* << pipeline.git.branch >>\n:link: << variables.CIRCLE_BUILD_URL >>"
+              "channel": "${SLACK_DEFAULT_CHANNEL}",
+              "attachments": [
+                {
+                  "color": "#36a64f",
+                  "blocks": [
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": ":rocket: *Pipeline* << pipeline.number >>\n*Branch:* << pipeline.git.branch >>\n*Job:* ${CIRCLE_BUILD_URL}"
+                      }
+                    }
+                  ]
+                }
+              ]
             }
+            EOF
+
+      - slack/notify:
+          event: always
+          custom: slack.json
+
 
 
 
