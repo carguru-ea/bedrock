@@ -159,32 +159,39 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-              if [ "$CHANGES_FOUND" != "true" ]; then
-                if [ "$FIRST_RUN" = "true" ]; then
-                  echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                  DEPLOY_TYPE="FULL_FIRST_RUN"
-                else
-                  echo "⚠️ No delta — FULL DEPLOY (no tag after)"
-                  DEPLOY_TYPE="FULL"
-                fi
-              
-                sf project generate manifest --source-dir force-app > /dev/null
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+
+            # --------------------------
+            # Decide deploy type
+            # --------------------------
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "🔄 DELTA deploy"
+              DEPLOY_TYPE="DELTA"
+
+            else
+              # No delta
+              if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+                DEPLOY_TYPE="FULL_FIRST_RUN"
               else
-                DEPLOY_TYPE="DELTA"
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
+                DEPLOY_TYPE="FULL_NO_TAG"
               fi
 
               sf project generate manifest --source-dir force-app > /dev/null
-              DEPLOY_TYPE="FULL"
-            else
-              DEPLOY_TYPE="DELTA"
             fi
 
-            echo "🚀 Running $DEPLOY_TYPE DEPLOY..."
+            # --------------------------
+            # Run Deployment
+            # --------------------------
+            echo "🚀 Running $DEPLOY_TYPE deployment..."
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
+
 
       # --------------------------------------------------------
       # Create New Tag
@@ -195,11 +202,16 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
+            # Determine whether to create a tag
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
-              newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
+              if [ "$FIRST_RUN" = "true" ]; then
+                newTag="${TAG_PREFIX}1"
+              else
+                newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
+              fi
 
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
@@ -207,9 +219,11 @@ commands:
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
+
             else
               echo "No changes — skipping tag creation."
             fi
+
 
 # ============================================================
 # JOBS PER ORG
