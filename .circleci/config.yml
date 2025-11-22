@@ -188,9 +188,9 @@ commands:
           channel: $SLACK_DEFAULT_CHANNEL
           event: always
           template: |
-            🚀 *Pipeline:* << pipeline.number >>
-            *Branch:* << pipeline.git.branch >>
-            🔗 *Pipeline Link:* ${CIRCLE_BUILD_URL}
+            {
+              "text": ":rocket: *Pipeline* << pipeline.number >>\n*Branch:* << pipeline.git.branch >>\n*Job:* ${CIRCLE_BUILD_URL}"
+            }
 
 
 
