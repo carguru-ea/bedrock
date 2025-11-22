@@ -100,16 +100,21 @@ commands:
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
-                refNum=$(echo "$tag" | cut -d '-' -f 2)
+                refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
               echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "No tags found — starting at 0"
+              echo "🔍 No tags found — FIRST RUN"
+              currentRef=0
+              echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
+
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
@@ -154,8 +159,20 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$CHANGES_FOUND" != "true" ]; then
-              echo "⚠️ No delta — FULL DEPLOY"
+              if [ "$CHANGES_FOUND" != "true" ]; then
+                if [ "$FIRST_RUN" = "true" ]; then
+                  echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+                  DEPLOY_TYPE="FULL_FIRST_RUN"
+                else
+                  echo "⚠️ No delta — FULL DEPLOY (no tag after)"
+                  DEPLOY_TYPE="FULL"
+                fi
+              
+                sf project generate manifest --source-dir force-app > /dev/null
+              else
+                DEPLOY_TYPE="DELTA"
+              fi
+
               sf project generate manifest --source-dir force-app > /dev/null
               DEPLOY_TYPE="FULL"
             else
