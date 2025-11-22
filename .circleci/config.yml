@@ -9,9 +9,9 @@ orbs:
 commands:
   install-tooling:
     steps:
-  # --------------------------------------------------------
-  # Tooling
-  # --------------------------------------------------------
+      # --------------------------------------------------------
+      # Tooling
+      # --------------------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -32,7 +32,8 @@ commands:
       - run:
           name: Decode JWT key for << parameters.target_env >>
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
 
       - run:
@@ -46,6 +47,9 @@ commands:
               --alias target \
               --set-default
 
+  # ----------------------------------------------------------
+  # DEPLOY WITH TAGS (DELTA + FULL FALLBACK)
+  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
@@ -89,18 +93,16 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
       
-            # Auto-detect Salesforce project root
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            PROJECT_DIR=$(dirname "$(find . -name 'sfdx-project.json' | head -n 1)")
             echo "Detected project directory: $PROJECT_DIR"
             cd "$PROJECT_DIR"
-      
+
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-      
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' \
-              > files.txt || true
-      
+              | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
+
             if [ -s files.txt ]; then
               echo "Changes detected:"
               cat files.txt
@@ -112,37 +114,23 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
       # --------------------------------------------------------
-      # Deploy
+      # Deploy (Delta or Full)
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-      
+
+            PROJECT_DIR=$(dirname "$(find . -name 'sfdx-project.json' | head -n 1)")
+            cd "$PROJECT_DIR"
+
             if [ "$CHANGES_FOUND" != "true" ]; then
               echo "⚠️ No delta detected — performing FULL DEPLOY"
-            
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-            
-              # Generate full package.xml from sfdx-project.json
-              echo "Generating full package.xml..."
               sf project generate manifest --source-dir force-app > /dev/null
-            
-              echo "Full package.xml generated:"
-              cat package.xml
-            
               FULL_DEPLOY="true"
-            else
-              FULL_DEPLOY="false"
             fi
 
-      
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-      
             if [ "$FULL_DEPLOY" = "true" ]; then
               echo "🚀 Running FULL DEPLOY..."
               sf project deploy start \
@@ -159,8 +147,6 @@ commands:
                 --wait 360
             fi
 
-
-
       # --------------------------------------------------------
       # Create New Tag
       # --------------------------------------------------------
@@ -169,16 +155,15 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-      
+
             if [ "$CHANGES_FOUND" = "true" ]; then
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              PROJECT_DIR=$(dirname "$(find . -name 'sfdx-project.json' | head -n 1)")
               cd "$PROJECT_DIR"
-      
+
               newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-      
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-      
+
               git tag "$newTag"
               git push origin "$newTag"
             else
@@ -258,7 +243,6 @@ workflows:
 
   build-test-deploy:
     jobs:
-
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
