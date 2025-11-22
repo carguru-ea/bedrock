@@ -262,21 +262,26 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      - slack/notify:
-          event: pass
-          template: basic_success_1
-          custom: |
-            🚀 *PROD Deployment SUCCESS!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+      # SUCCESS
+      - run:
+          name: Slack Success Message
+          when: on_success
+          command: |
+            SLACK_TEXT="🚀 Deployment SUCCESS to INTQA on branch *${CIRCLE_BRANCH}*\n<${CIRCLE_BUILD_URL}|Open Pipeline>"
+            curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$SLACK_TEXT\"}" \
+            $SLACK_WEBHOOK_URL
 
-      - slack/notify:
-          event: fail
-          template: basic_fail_1
-          custom: |
-            ❌ *PROD Deployment FAILED!*  
-            • Branch: $CIRCLE_BRANCH  
-            • Pipeline: <$CIRCLE_BUILD_URL|Open Pipeline>
+      # FAILURE
+      - run:
+          name: Slack Failure Message
+          when: on_fail
+          command: |
+            SLACK_TEXT="❌ Deployment FAILED to INTQA on branch *${CIRCLE_BRANCH}*\n<${CIRCLE_BUILD_URL}|Open Pipeline>"
+            curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$SLACK_TEXT\"}" \
+            $SLACK_WEBHOOK_URL
+
 
 # ============================================================
 # WORKFLOWS (BRANCH → ENVIRONMENT)
