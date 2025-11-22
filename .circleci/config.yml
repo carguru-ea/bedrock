@@ -92,24 +92,72 @@ commands:
             fi
 
       - run:
-          name: Deploy Metadata
+          name: Advanced Cancel-Protected Salesforce Deployment
           command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
+            set -e
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "Running delta deploy"
-            else
-              echo "No delta, running full deploy"
-              sf project generate manifest --source-dir force-app > /dev/null
-            fi
+            echo "=== PREPARING CANCEL-PROTECTED SF DEPLOY ==="
+
+            # ---------------------------------------------------------
+            # 1. Trap CANCEL (SIGTERM from CircleCI)
+            # ---------------------------------------------------------
+            trap '
+              echo "🔥 CircleCI Cancel Detected — Attempting to Cancel Deployment in Salesforce";
+              if [ -f deploy_id.txt ]; then
+                DEPLOY_ID=$(cat deploy_id.txt)
+                echo "Canceling deployment ID: $DEPLOY_ID"
+                sf deploy:cancel --target-org target -i "$DEPLOY_ID" || true
+              fi
+              exit 1
+            ' TERM INT
+
+            # ---------------------------------------------------------
+            # 2. Start Deployment in Background & Capture ID
+            # ---------------------------------------------------------
+            echo "🚀 Starting Salesforce Deployment in Background..."
 
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
-              --wait 360
+              --json > deploy_output.json &
+
+            DEPLOY_PID=$!
+            echo "Background PID = $DEPLOY_PID"
+
+            # Parse deploy ID
+            sleep 2
+            DEPLOY_ID=$(cat deploy_output.json | jq -r '.result.id')
+            echo "$DEPLOY_ID" > deploy_id.txt
+            echo "Captured Deploy ID: $DEPLOY_ID"
+
+            # ---------------------------------------------------------
+            # 3. Start monitor watcher to detect early exits
+            # ---------------------------------------------------------
+            (
+              while kill -0 $DEPLOY_PID 2>/dev/null; do
+                echo "⏳ Deployment running... monitoring..."
+                sleep 10
+              done
+              echo "Background deploy finished normally."
+            ) &
+            MONITOR_PID=$!
+
+            # ---------------------------------------------------------
+            # 4. Wait for the actual deploy process
+            # ---------------------------------------------------------
+            wait $DEPLOY_PID || DEPLOY_EXIT=$?
+
+            # ---------------------------------------------------------
+            # 5. Final Handling
+            # ---------------------------------------------------------
+            if [ "$DEPLOY_EXIT" != "" ]; then
+              echo "❌ Deployment process ended with failure (exit code $DEPLOY_EXIT)."
+              exit $DEPLOY_EXIT
+            fi
+
+            echo "✅ Deployment completed successfully."
+
 
       - run:
           name: Create & Push New Tag
