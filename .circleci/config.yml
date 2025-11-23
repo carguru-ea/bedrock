@@ -267,12 +267,12 @@ jobs:
           event: pass
           custom: |
             :white_check_mark: INTQA Deploy Succeeded!
-            Pipeline: ${CIRCLE_PIPELINE_URL}
+            Pipeline: "www.google.com"
       - slack/notify:
           event: fail
           custom: |
             :x: INTQA Deploy Failed!
-            Pipeline: ${CIRCLE_PIPELINE_URL}
+            Pipeline:"www.google.com"
 
 
   deploy-staging:
@@ -288,6 +288,16 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+      - slack/notify:
+          event: pass
+          custom: |
+            :white_check_mark: STAGINGUAT Deploy Succeeded!
+            Pipeline: ${CIRCLE_PIPELINE_URL}
+      - slack/notify:
+          event: fail
+          custom: |
+            :x: STAGINGUAT Deploy Failed!
+            Pipeline: ${CIRCLE_PIPELINE_URL}
 
   deploy-main:
     parameters:
