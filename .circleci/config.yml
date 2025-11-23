@@ -2,17 +2,12 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
-  deploy: circleci/deploy@2.0.0
 
 # ============================================================  
 # COMMANDS
 # ============================================================
 commands:
 
-  # ----------------------------------------------------------
-  # Install Tooling
-  # ----------------------------------------------------------
   install-tooling:
     steps:
       - node/install:
@@ -23,9 +18,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -49,197 +41,130 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
-  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
             echo "🔍 Checking for active deployments by 'ravitej varada'"
-      
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
                AND CreatedBy.Name = 'ravitej varada'
              ORDER BY CreatedDate DESC" --json)
-      
             echo "$ACTIVE_DEPLOYS" | jq .
-      
             DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
-      
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
               echo "⚠️ Deployments found — attempting cancel..."
-      
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
-      
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
-      
-                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
-                  echo "ℹ️ Deployment $deployId already completed — skipping."
-                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
-                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
-                else
-                  echo "✔️ Cancel command processed for $deployId"
-                fi
-      
               done
-      
               echo "✔️ Safe cancel complete — continuing pipeline."
             fi
-      
             true
 
-
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
-            echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
-
             currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
-
             if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
-              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "🔍 No tags found — FIRST RUN"
               currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
-
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' \
               > files.txt || true
-
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
-      # --------------------------------------------------------
-      # Deploy (Delta or Full)
-      # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
             source $BASH_ENV
-
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
-
             if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
             else
               if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
               else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
                 DEPLOY_TYPE="FULL_NO_TAG"
               fi
-
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
+            # MUST succeed for deploy markers
+            echo "export DEPLOY_STARTED=true" >> $BASH_ENV
+
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
 
-
-      # --------------------------------------------------------
-      # Create New Tag
-      # --------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-
               if [ "$FIRST_RUN" = "true" ]; then
                 newTag="${TAG_PREFIX}1"
               else
                 newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
               fi
-
               git config user.email "circleci@example.com"
               git config user.name "CircleCI"
-
               git tag "$newTag"
               git push origin "$newTag"
-              echo "✔️ Created tag: $newTag"
-            else
-              echo "No changes — skipping tag creation."
             fi
 
+# ============================================================
+# JOBS WITH DEPLOY MARKERS ADDED
+# ============================================================
 
-# ============================================================
-# JOBS PER ORG
-# ============================================================
 jobs:
 
-  # ---------------- INTQA ----------------
+  ### ---------------------------------------------------------
+  ### INTQA
+  ### ---------------------------------------------------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -251,26 +176,54 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: INTQA
+
+      # 📌 1. Deploy Marker: PLAN
+      - run:
+          name: DEPLOY MARKER PLAN (INTQA)
+          command: |
+            circleci release plan \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "INTQA"
+
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # ✅ ADD DEPLOY MARKER
-      - deploy/add-deploy-marker:
-          environment: "INTQA"
+      # 📌 2. Deploy Marker: RUNNING
+      - run:
+          name: DEPLOY MARKER RUNNING (INTQA)
+          command: |
+            circleci release update \
+              --status RUNNING \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "INTQA"
 
-      # ----- SLACK NOTIFICATIONS -----
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
+      # 📌 3. SUCCESS / FAILED markers
+      - run:
+          name: DEPLOY MARKER SUCCESS (INTQA)
+          when: on_success
+          command: |
+            circleci release update \
+              --status SUCCESS \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "INTQA"
 
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+      - run:
+          name: DEPLOY MARKER FAILED (INTQA)
+          when: on_fail
+          command: |
+            circleci release update \
+              --status FAILED \
+              --component-name "bedrock" \
+              --failure-reason "Deployment failed" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "INTQA"
 
-
-  # ---------------- STAGING ----------------
+  ### ---------------------------------------------------------
+  ### STAGINGUAT
+  ### ---------------------------------------------------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -282,22 +235,54 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: STAGINGUAT
+
+      # PLAN
+      - run:
+          name: DEPLOY MARKER PLAN (STAGINGUAT)
+          command: |
+            circleci release plan \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "STAGINGUAT"
+
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # ----- SLACK NOTIFICATIONS -----
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
+      # RUNNING
+      - run:
+          name: DEPLOY MARKER RUNNING (STAGINGUAT)
+          command: |
+            circleci release update \
+              --status RUNNING \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "STAGINGUAT"
 
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+      # SUCCESS / FAIL
+      - run:
+          name: DEPLOY MARKER SUCCESS (STAGINGUAT)
+          when: on_success
+          command: |
+            circleci release update \
+              --status SUCCESS \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "STAGINGUAT"
 
+      - run:
+          name: DEPLOY MARKER FAILED (STAGINGUAT)
+          when: on_fail
+          command: |
+            circleci release update \
+              --status FAILED \
+              --failure-reason "Deployment failed" \
+              --component-version "$CIRCLE_SHA1" \
+              --component-name "bedrock" \
+              --environment-name "STAGINGUAT"
 
-  # ---------------- PROD ----------------
+  ### ---------------------------------------------------------
+  ### PROD
+  ### ---------------------------------------------------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -309,11 +294,50 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: PROD
+
+      # PLAN
+      - run:
+          name: DEPLOY MARKER PLAN (PROD)
+          command: |
+            circleci release plan \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "PROD"
+
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # RUNNING
+      - run:
+          name: DEPLOY MARKER RUNNING (PROD)
+          command: |
+            circleci release update \
+              --status RUNNING \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "PROD"
 
+      # SUCCESS / FAIL
+      - run:
+          name: DEPLOY MARKER SUCCESS (PROD)
+          when: on_success
+          command: |
+            circleci release update \
+              --status SUCCESS \
+              --component-name "bedrock" \
+              --component-version "$CIRCLE_SHA1" \
+              --environment-name "PROD"
 
+      - run:
+          name: DEPLOY MARKER FAILED (PROD)
+          when: on_fail
+          command: |
+            circleci release update \
+              --status FAILED \
+              --failure-reason "Deployment failed" \
+              --component-version "$CIRCLE_SHA1" \
+              --component-name "bedrock" \
+              --environment-name "PROD"
 
 # ============================================================
 # WORKFLOWS
@@ -323,7 +347,6 @@ workflows:
 
   build-test-deploy:
     jobs:
-
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
