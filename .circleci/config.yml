@@ -3,7 +3,7 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
 
-# ============================================================ 
+# ============================================================  
 # COMMANDS
 # ============================================================
 commands:
@@ -60,31 +60,51 @@ commands:
       # Check & Cancel Pending/InProgress Deployments
       # --------------------------------------------------------
       - run:
-          name: Cancel Existing Deploys
+          name: Cancel Existing Deploys (Safe Mode)
           command: |
             echo "🔍 Checking for active deployments by 'ravitej varada'"
-
+      
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
                AND CreatedBy.Name = 'ravitej varada'
              ORDER BY CreatedDate DESC" --json)
-
+      
             echo "$ACTIVE_DEPLOYS" | jq .
-
+      
             DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
-
+      
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
-              echo "⚠️ Deployments found — canceling..."
+              echo "⚠️ Deployments found — attempting cancel..."
+      
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
-                sf project deploy cancel --job-id "$deployId"
+      
+                # -------------------------
+                # SAFE CANCEL - NEVER FAIL
+                # -------------------------
+                CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
+                echo "$CANCEL_OUTPUT"
+      
+                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
+                  echo "ℹ️ Deployment $deployId already completed — skipping."
+                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
+                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
+                else
+                  echo "✔️ Cancel command processed for $deployId"
+                fi
+      
               done
-              echo "✔️ All deployments canceled."
+      
+              echo "✔️ Safe cancel complete — continuing pipeline."
             fi
+      
+            # Do not let this step fail
+            true
+
 
       # --------------------------------------------------------
       # Identify most recent tag
