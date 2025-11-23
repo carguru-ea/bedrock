@@ -2,11 +2,41 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
+  slack: circleci/slack@4.12.5
 
-# ============================================================  
-# COMMANDS
+# ============================================================
+# GENERIC SLACK NOTIFICATION COMMAND (RUNS ONCE PER PIPELINE)
 # ============================================================
 commands:
+
+  notify-slack-generic:
+    steps:
+      - slack/notify:
+          channel: "${SLACK_DEFAULT_CHANNEL}"
+          event: always
+          custom: |
+            {
+              "text": "*Pipeline Notification*",
+              "attachments": [
+                {
+                  "title": "Pipeline #${CIRCLE_PIPELINE_NUMBER}",
+                  "title_link": "${CIRCLE_BUILD_URL}",
+                  "color": "${CIRCLE_WORKFLOW_STATUS}" == "success" ? "good" : "danger",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "value": "${CIRCLE_WORKFLOW_STATUS}",
+                      "short": true
+                    },
+                    {
+                      "title": "Branch",
+                      "value": "${CIRCLE_BRANCH}",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
 
   # ----------------------------------------------------------
   # Install Tooling
@@ -30,7 +60,7 @@ commands:
         type: string
     steps:
       - run:
-          name: Decode JWT key for << parameters.target_env >>
+          name: Decode JWT Key for << parameters.target_env >>
           command: |
             echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
               || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
@@ -48,7 +78,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
+  # DEPLOY WITH TAGS + SAFE CANCEL
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -56,9 +86,9 @@ commands:
         type: string
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
+      # ------------------------------------------------------
+      # Cancel Active Deployments (SAFE)
+      # ------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -82,33 +112,24 @@ commands:
       
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
-      
-                # -------------------------
-                # SAFE CANCEL - NEVER FAIL
-                # -------------------------
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
       
                 if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
-                  echo "ℹ️ Deployment $deployId already completed — skipping."
+                  echo "ℹ️ Already completed — skipping."
                 elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
-                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
+                  echo "⚠️ Cannot cancel — ignoring."
                 else
-                  echo "✔️ Cancel command processed for $deployId"
+                  echo "✔️ Cancel command sent."
                 fi
       
               done
-      
-              echo "✔️ Safe cancel complete — continuing pipeline."
             fi
-      
-            # Do not let this step fail
             true
 
-
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
+      # ------------------------------------------------------
+      # Identify Most Recent Tag
+      # ------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -120,8 +141,6 @@ commands:
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
@@ -135,12 +154,11 @@ commands:
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
-
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
+      # ------------------------------------------------------
       # Build Delta Manifest
-      # --------------------------------------------------------
+      # ------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -150,12 +168,10 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
+            echo "Comparing HEAD to ${TAG_PREFIX}${CURRENT_REF}"
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' \
-              > files.txt || true
+              | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
               echo "Changes detected:"
@@ -164,13 +180,13 @@ commands:
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No delta — full deploy required"
+              echo "No delta — full deploy"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy (Delta or Full)
-      # --------------------------------------------------------
+      # ------------------------------------------------------
+      # Deploy Delta or Full
+      # ------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
@@ -179,50 +195,34 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
-
-            # --------------------------
-            # Decide deploy type
-            # --------------------------
             if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
-
             else
-              # No delta
               if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
               else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
                 DEPLOY_TYPE="FULL_NO_TAG"
               fi
-
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-            # --------------------------
-            # Run Deployment
-            # --------------------------
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
+            echo "🚀 Deploy Type: $DEPLOY_TYPE"
+
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
 
-
-      # --------------------------------------------------------
-      # Create New Tag
-      # --------------------------------------------------------
+      # ------------------------------------------------------
+      # Create Tag
+      # ------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            # Determine whether to create a tag
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
@@ -238,10 +238,10 @@ commands:
 
               git tag "$newTag"
               git push origin "$newTag"
-              echo "✔️ Created tag: $newTag"
 
+              echo "✔️ Created tag: $newTag"
             else
-              echo "No changes — skipping tag creation."
+              echo "Skipping tag creation — no changes."
             fi
 
 
@@ -292,6 +292,16 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+  # --------------------------------------------------------
+  # SINGLE PIPELINE-LEVEL SLACK NOTIFICATION
+  # --------------------------------------------------------
+  slack-notification:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - notify-slack-generic
+
+
 # ============================================================
 # WORKFLOWS
 # ============================================================
@@ -321,3 +331,12 @@ workflows:
           filters:
             branches:
               only: main
+
+      # ------------------------------------------------------
+      # ONE-TIME SLACK NOTIFICATION FOR ENTIRE PIPELINE
+      # ------------------------------------------------------
+      - slack-notification:
+          requires:
+            - deploy-intqa
+            - deploy-staging
+            - deploy-main
