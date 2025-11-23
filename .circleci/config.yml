@@ -2,7 +2,8 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
+  slack: circleci/slack@4.9.0
+
 # ============================================================  
 # COMMANDS
 # ============================================================
@@ -263,17 +264,6 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - slack/notify:
-          event: pass
-          custom: |
-            :white_check_mark: INTQA Deploy Succeeded!
-            Pipeline: "www.google.com"
-      - slack/notify:
-          event: fail
-          custom: |
-            :x: INTQA Deploy Failed!
-            Pipeline:"www.google.com"
-
 
   deploy-staging:
     parameters:
@@ -288,16 +278,6 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - slack/notify:
-          event: pass
-          custom: |
-            :white_check_mark: STAGINGUAT Deploy Succeeded!
-            Pipeline: ${CIRCLE_PIPELINE_URL}
-      - slack/notify:
-          event: fail
-          custom: |
-            :x: STAGINGUAT Deploy Failed!
-            Pipeline: ${CIRCLE_PIPELINE_URL}
 
   deploy-main:
     parameters:
@@ -342,3 +322,22 @@ workflows:
           filters:
             branches:
               only: main
+
+      # Slack notifications (uses SLACK_WEBHOOK env var stored in project/context)
+      - slack/notify:
+          requires:
+            - deploy-intqa
+            - deploy-staging
+            - deploy-main
+          webhook: SLACK_WEBHOOK
+          channel: "#deployments"
+          event: fail
+
+      - slack/notify:
+          requires:
+            - deploy-intqa
+            - deploy-staging
+            - deploy-main
+          webhook: SLACK_WEBHOOK
+          channel: "#deployments"
+          event: success
