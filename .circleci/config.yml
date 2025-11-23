@@ -253,12 +253,12 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
     # ---- DEPLOY MARKER: SUCCESS ONLY ----
-    - deployment/marker:
-        environment: "<< parameters.tag_prefix >>"
-        revision: << pipeline.git.revision >>
-        application: "Salesforce Metadata Deployment"
-        description: "<< parameters.tag_prefix >> successful deploy"
-        when: on_success
+      - deployment/marker:
+          environment: "<< parameters.tag_prefix >>"
+          revision: << pipeline.git.revision >>
+          application: "Salesforce Metadata Deployment"
+          description: "<< parameters.tag_prefix >> successful deploy"
+          when: on_success
 
       # ----- SLACK -----
       - slack/notify:
@@ -289,12 +289,12 @@ jobs:
 
 
     # ---- DEPLOY MARKER: SUCCESS ONLY ----
-    - deployment/marker:
-        environment: "<< parameters.tag_prefix >>"
-        revision: << pipeline.git.revision >>
-        application: "Salesforce Metadata Deployment"
-        description: "<< parameters.tag_prefix >> successful deploy"
-        when: on_success
+      - deployment/marker:
+          environment: "<< parameters.tag_prefix >>"
+          revision: << pipeline.git.revision >>
+          application: "Salesforce Metadata Deployment"
+          description: "<< parameters.tag_prefix >> successful deploy"
+          when: on_success
 
       # ----- SLACK -----
       - slack/notify:
@@ -325,12 +325,12 @@ jobs:
 
 
     # ---- DEPLOY MARKER: SUCCESS ONLY ----
-    - deployment/marker:
-        environment: "<< parameters.tag_prefix >>"
-        revision: << pipeline.git.revision >>
-        application: "Salesforce Metadata Deployment"
-        description: "<< parameters.tag_prefix >> successful deploy"
-        when: on_success
+      - deployment/marker:
+          environment: "<< parameters.tag_prefix >>"
+          revision: << pipeline.git.revision >>
+          application: "Salesforce Metadata Deployment"
+          description: "<< parameters.tag_prefix >> successful deploy"
+          when: on_success
 
 
 # ============================================================
