@@ -345,7 +345,7 @@ workflows:
 
       - deploy-intqa:
           context: sf-intqa
-          tag_prefix: "INTQA"
+          tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
