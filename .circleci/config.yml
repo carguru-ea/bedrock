@@ -3,6 +3,7 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
+  deploy: circleci/deploy@2.0.0
 
 # ============================================================  
 # COMMANDS
@@ -252,6 +253,10 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+
+      # ✅ ADD DEPLOY MARKER
+      - deploy/add-deploy-marker:
+          environment: "INTQA"
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
