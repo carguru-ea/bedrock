@@ -169,8 +169,8 @@ jobs:
     parameters:
       tag_prefix:
         type: string
-    docker:
-      - image: cimg/node:20.10
+    machine:
+      image: ubuntu-2204:2024.04.3
     steps:
       - checkout
       - install-tooling
