@@ -2,7 +2,6 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
 
 # ============================================================  
 # COMMANDS
@@ -49,57 +48,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # SLACK NOTIFY SUCCESS
-  # ----------------------------------------------------------
-  notify-success:
-    parameters:
-      env:
-        type: string
-    steps:
-      - slack/notify:
-          channel: "${SLACK_DEFAULT_CHANNEL}"
-          event: success
-          custom: |
-            {
-              "text": ":white_check_mark: *Deployment Succeeded*",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Environment:* << parameters.env >>\n*Status:* Success\n*Pipeline:* ${CIRCLE_PIPELINE_URL}"
-                  }
-                }
-              ]
-            }
-
-  # ----------------------------------------------------------
-  # SLACK NOTIFY FAILURE
-  # ----------------------------------------------------------
-  notify-fail:
-    parameters:
-      env:
-        type: string
-    steps:
-      - slack/notify:
-          channel: "${SLACK_DEFAULT_CHANNEL}"
-          event: fail
-          custom: |
-            {
-              "text": ":x: *Deployment FAILED*",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Environment:* << parameters.env >>\n*Status:* Failed\n*Pipeline:* ${CIRCLE_PIPELINE_URL}"
-                  }
-                }
-              ]
-            }
-
-  # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE
+  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -107,7 +56,9 @@ commands:
         type: string
     steps:
 
-      # ---------------- Cancel Active Deploys ----------------
+      # --------------------------------------------------------
+      # Check & Cancel Pending/InProgress Deployments
+      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -131,6 +82,10 @@ commands:
       
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
+      
+                # -------------------------
+                # SAFE CANCEL - NEVER FAIL
+                # -------------------------
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
       
@@ -147,9 +102,13 @@ commands:
               echo "✔️ Safe cancel complete — continuing pipeline."
             fi
       
+            # Do not let this step fail
             true
 
-      # ---------------- Find Most Recent Tag -----------------
+
+      # --------------------------------------------------------
+      # Identify most recent tag
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -176,9 +135,12 @@ commands:
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
+
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # ---------------- Build Manifest -----------------------
+      # --------------------------------------------------------
+      # Build Delta Manifest
+      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -206,7 +168,9 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # ---------------- Deploy Metadata -----------------------
+      # --------------------------------------------------------
+      # Deploy (Delta or Full)
+      # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
@@ -215,17 +179,32 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+
+            # --------------------------
+            # Decide deploy type
+            # --------------------------
             if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
+
             else
+              # No delta
               if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
               else
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
                 DEPLOY_TYPE="FULL_NO_TAG"
               fi
+
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
+            # --------------------------
+            # Run Deployment
+            # --------------------------
             echo "🚀 Running $DEPLOY_TYPE deployment..."
             sf project deploy start \
               --manifest package.xml \
@@ -233,13 +212,17 @@ commands:
               --test-level RunLocalTests \
               --wait 360
 
-      # ---------------- Create Next Tag -----------------------
+
+      # --------------------------------------------------------
+      # Create New Tag
+      # --------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
+            # Determine whether to create a tag
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
@@ -256,6 +239,7 @@ commands:
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
+
             else
               echo "No changes — skipping tag creation."
             fi
@@ -279,10 +263,6 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-success:
-          env: "INTQA"
-      - notify-fail:
-          env: "INTQA"
 
   deploy-staging:
     parameters:
@@ -297,10 +277,6 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-success:
-          env: "STAGING"
-      - notify-fail:
-          env: "STAGING"
 
   deploy-main:
     parameters:
@@ -315,10 +291,6 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-success:
-          env: "PROD"
-      - notify-fail:
-          env: "PROD"
 
 # ============================================================
 # WORKFLOWS
