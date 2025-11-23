@@ -2,7 +2,7 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.9.0
+  slack: circleci/slack@4.12.5
 
 # ============================================================  
 # COMMANDS
@@ -84,9 +84,6 @@ commands:
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
       
-                # -------------------------
-                # SAFE CANCEL - NEVER FAIL
-                # -------------------------
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
       
@@ -103,7 +100,6 @@ commands:
               echo "✔️ Safe cancel complete — continuing pipeline."
             fi
       
-            # Do not let this step fail
             true
 
 
@@ -136,8 +132,8 @@ commands:
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
-
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+
 
       # --------------------------------------------------------
       # Build Delta Manifest
@@ -169,6 +165,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+
       # --------------------------------------------------------
       # Deploy (Delta or Full)
       # --------------------------------------------------------
@@ -183,15 +180,10 @@ commands:
             echo "FIRST_RUN=$FIRST_RUN"
             echo "CHANGES_FOUND=$CHANGES_FOUND"
 
-            # --------------------------
-            # Decide deploy type
-            # --------------------------
             if [ "$CHANGES_FOUND" = "true" ]; then
               echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
-
             else
-              # No delta
               if [ "$FIRST_RUN" = "true" ]; then
                 echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
@@ -203,9 +195,6 @@ commands:
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-            # --------------------------
-            # Run Deployment
-            # --------------------------
             echo "🚀 Running $DEPLOY_TYPE deployment..."
             sf project deploy start \
               --manifest package.xml \
@@ -223,7 +212,6 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            # Determine whether to create a tag
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
@@ -240,7 +228,6 @@ commands:
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
-
             else
               echo "No changes — skipping tag creation."
             fi
@@ -251,6 +238,7 @@ commands:
 # ============================================================
 jobs:
 
+  # ---------------- INTQA ----------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -265,6 +253,20 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
+      - slack/notify-on-fail:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ❌ INTQA Deployment FAILED
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+      - slack/notify-on-success:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ✅ INTQA Deployment SUCCESS
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -279,6 +281,20 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
+      - slack/notify-on-fail:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ❌ STAGING Deployment FAILED
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+      - slack/notify-on-success:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ✅ STAGING Deployment SUCCESS
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+  # ---------------- PROD ----------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -293,13 +309,29 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
+      - slack/notify-on-fail:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ❌ PROD Deployment FAILED
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+      - slack/notify-on-success:
+          channel: $SLACK_DEFAULT_CHANNEL
+          message: |
+            ✅ PROD Deployment SUCCESS
+            Pipeline: $CIRCLE_PIPELINE_URL
+
+
 # ============================================================
 # WORKFLOWS
 # ============================================================
 workflows:
   version: 2
+
   build-test-deploy:
     jobs:
+
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
@@ -320,21 +352,3 @@ workflows:
           filters:
             branches:
               only: main
-
-      - slack/notify:
-          requires:
-            - deploy-intqa
-            - deploy-staging
-            - deploy-main
-          webhook: SLACK_WEBHOOK
-          channel: "#deployments"
-          event: fail
-
-      - slack/notify:
-          requires:
-            - deploy-intqa
-            - deploy-staging
-            - deploy-main
-          webhook: SLACK_WEBHOOK
-          channel: "#deployments"
-          event: success
