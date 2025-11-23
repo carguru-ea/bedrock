@@ -281,17 +281,16 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
       # ----- SLACK NOTIFICATIONS -----
-      - slack/notify-on-fail:
+      - slack/notify:
+          event: fail
           channel: $SLACK_DEFAULT_CHANNEL
-          message: |
-            ❌ STAGING Deployment FAILED
-            Pipeline: $CIRCLE_PIPELINE_URL
+          template: basic_fail_1
 
-      - slack/notify-on-success:
+      - slack/notify:
+          event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          message: |
-            ✅ STAGING Deployment SUCCESS
-            Pipeline: $CIRCLE_PIPELINE_URL
+          template: basic_success_1
+
 
   # ---------------- PROD ----------------
   deploy-main:
@@ -308,18 +307,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-      # ----- SLACK NOTIFICATIONS -----
-      - slack/notify-on-fail:
-          channel: $SLACK_DEFAULT_CHANNEL
-          message: |
-            ❌ PROD Deployment FAILED
-            Pipeline: $CIRCLE_PIPELINE_URL
 
-      - slack/notify-on-success:
-          channel: $SLACK_DEFAULT_CHANNEL
-          message: |
-            ✅ PROD Deployment SUCCESS
-            Pipeline: $CIRCLE_PIPELINE_URL
 
 
 # ============================================================
