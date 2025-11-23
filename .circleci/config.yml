@@ -49,34 +49,57 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # SLACK NOTIFY
+  # SLACK NOTIFY SUCCESS
   # ----------------------------------------------------------
-  notify-slack:
+  notify-success:
     parameters:
       env:
-        type: string
-      status:
         type: string
     steps:
       - slack/notify:
           channel: "${SLACK_DEFAULT_CHANNEL}"
-          event: always
+          event: success
           custom: |
             {
-              "text": ":rocket: *Salesforce Deployment Notification*",
+              "text": ":white_check_mark: *Deployment Succeeded*",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Environment:* << parameters.env >>\n*Status:* << parameters.status >>\n*Pipeline:* ${CIRCLE_PIPELINE_URL}"
+                    "text": "*Environment:* << parameters.env >>\n*Status:* Success\n*Pipeline:* ${CIRCLE_PIPELINE_URL}"
                   }
                 }
               ]
             }
 
   # ----------------------------------------------------------
-  # DEPLOY WITH TAGS (YOUR ORIGINAL CODE)
+  # SLACK NOTIFY FAILURE
+  # ----------------------------------------------------------
+  notify-fail:
+    parameters:
+      env:
+        type: string
+    steps:
+      - slack/notify:
+          channel: "${SLACK_DEFAULT_CHANNEL}"
+          event: fail
+          custom: |
+            {
+              "text": ":x: *Deployment FAILED*",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Environment:* << parameters.env >>\n*Status:* Failed\n*Pipeline:* ${CIRCLE_PIPELINE_URL}"
+                  }
+                }
+              ]
+            }
+
+  # ----------------------------------------------------------
+  # DEPLOY WITH TAGS + CANCEL ACTIVE
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -84,9 +107,7 @@ commands:
         type: string
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
+      # ---------------- Cancel Active Deploys ----------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -128,9 +149,7 @@ commands:
       
             true
 
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
+      # ---------------- Find Most Recent Tag -----------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -159,9 +178,7 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
+      # ---------------- Build Manifest -----------------------
       - run:
           name: Build Manifest
           command: |
@@ -189,9 +206,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy Meta
-      # --------------------------------------------------------
+      # ---------------- Deploy Metadata -----------------------
       - run:
           name: Deploy Metadata
           command: |
@@ -199,9 +214,6 @@ commands:
 
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
 
             if [ "$CHANGES_FOUND" = "true" ]; then
               DEPLOY_TYPE="DELTA"
@@ -221,9 +233,7 @@ commands:
               --test-level RunLocalTests \
               --wait 360
 
-      # --------------------------------------------------------
-      # Create Tag
-      # --------------------------------------------------------
+      # ---------------- Create Next Tag -----------------------
       - run:
           name: Create & Push Tag
           command: |
@@ -269,9 +279,10 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-slack:
+      - notify-success:
           env: "INTQA"
-          status: "<< pipeline.status >>"
+      - notify-fail:
+          env: "INTQA"
 
   deploy-staging:
     parameters:
@@ -286,9 +297,10 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-slack:
+      - notify-success:
           env: "STAGING"
-          status: "<< pipeline.status >>"
+      - notify-fail:
+          env: "STAGING"
 
   deploy-main:
     parameters:
@@ -303,9 +315,10 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-      - notify-slack:
+      - notify-success:
           env: "PROD"
-          status: "<< pipeline.status >>"
+      - notify-fail:
+          env: "PROD"
 
 # ============================================================
 # WORKFLOWS
