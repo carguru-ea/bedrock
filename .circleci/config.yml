@@ -2,7 +2,7 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
-  slack: circleci/slack@4.12.5
+  slack: circleci/slack@4.9.0
 
 # ============================================================  
 # COMMANDS
@@ -298,10 +298,8 @@ jobs:
 # ============================================================
 workflows:
   version: 2
-
   build-test-deploy:
     jobs:
-
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
@@ -323,7 +321,6 @@ workflows:
             branches:
               only: main
 
-      # Slack notifications (uses SLACK_WEBHOOK env var stored in project/context)
       - slack/notify:
           requires:
             - deploy-intqa
