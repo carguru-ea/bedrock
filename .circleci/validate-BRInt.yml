@@ -39,7 +39,7 @@ jobs:
             sf auth sfdxurl store -f token.txt -a targetOrg -d
 
       - run:
-          name: Validate Metadata (Dry Run)
+          name: Validate Metadata
           command: |
             cd Bedrock/Bedrock
             sf project deploy start \
