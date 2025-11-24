@@ -1,6 +1,5 @@
 public without sharing class Check2 {
     //TEST 1mmmmnnnnndddsdsddddddd
-
     // Basic method: returns sum ofddd two integers (treats null as 0)
     public static Integer add(Integer a, Integer b) {
         Integer x = (a == null) ? 0 : a;
