@@ -30,14 +30,14 @@ jobs:
 
 
       - run:
-          name: Decode JWT key for << parameters.target_env >>
+          name: Decode JWT key for INTQA
           command: |
-            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
-              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_INTQA >>}" > server.key
             chmod 600 server.key
 
       - run:
-          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          name: Authenticate to Salesforce INTQA
           command: |
             sf org login jwt \
               --username "${SF_USERNAME_INTQA}" \
