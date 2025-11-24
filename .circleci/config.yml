@@ -49,7 +49,7 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # DEPLOY MARKERS (START / END)
+  # DEPLOY MARKERS (LOG ONLY)
   # ----------------------------------------------------------
   deploy-marker-start:
     parameters:
@@ -78,7 +78,7 @@ commands:
             echo "=========================================="
 
   # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
+  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS + OFFICIAL CC MARKERS
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -88,9 +88,16 @@ commands:
         type: string
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
+      # ----------- CircleCI Official Deployment START ----------
+      - run:
+          name: CircleCI Deployment Start
+          command: |
+            circleci-agent deployment start \
+              --component-name "<< parameters.env >>" \
+              --environment "<< parameters.env >>"
+            
+
+      # -------------------- CANCEL EXISTING DEPLOYS -------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -197,7 +204,7 @@ commands:
 
 
       # --------------------------------------------------------
-      # Deploy (Delta or Full) + DEPLOY MARKERS
+      # Deploy (Delta or Full)
       # --------------------------------------------------------
       - deploy-marker-start:
           env: << parameters.env >>
@@ -229,14 +236,38 @@ commands:
             fi
 
             echo "🚀 Running $DEPLOY_TYPE deployment..."
+            set +e
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
               --wait 360
+            DEPLOY_EXIT=$?
+            set -e
+
+            echo "export DEPLOY_EXIT=$DEPLOY_EXIT" >> $BASH_ENV
 
       - deploy-marker-end:
           env: << parameters.env >>
+
+      # ---------- CircleCI Official Deployment END (SUCCESS / FAILURE) ----------
+      - run:
+          name: Register Deployment Status
+          command: |
+            source $BASH_ENV
+            if [ "$DEPLOY_EXIT" -eq 0 ]; then
+              circleci-agent deployment end \
+                --component-name "<< parameters.env >>" \
+                --environment "<< parameters.env >>" \
+                --status success
+            else
+              circleci-agent deployment end \
+                --component-name "<< parameters.env >>" \
+                --environment "<< parameters.env >>" \
+                --status failure
+              exit 1
+            fi
+
 
       # --------------------------------------------------------
       # Create New Tag
@@ -246,6 +277,11 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
+
+            if [ "$DEPLOY_EXIT" -ne 0 ]; then
+              echo "Skipping tag creation due to failed deploy"
+              exit 0
+            fi
 
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
@@ -266,110 +302,3 @@ commands:
             else
               echo "No changes — skipping tag creation."
             fi
-
-
-# ============================================================
-# JOBS PER ORG
-# ============================================================
-jobs:
-
-  # ---------------- INTQA ----------------
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          env: "INTQA"
-          tag_prefix: << parameters.tag_prefix >>
-
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
-
-
-  # ---------------- STAGING ----------------
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          env: "STAGING"
-          tag_prefix: << parameters.tag_prefix >>
-
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
-
-
-  # ---------------- PROD ----------------
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          env: "PROD"
-          tag_prefix: << parameters.tag_prefix >>
-
-
-# ============================================================ 
-# WORKFLOWS
-# ============================================================
-workflows:
-  version: 2
-
-  build-test-deploy:
-    jobs:
-
-      - deploy-intqa:
-          context: sf-intqa
-          tag_prefix: "INTQA-"
-          filters:
-            branches:
-              only: BRInt
-
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          filters:
-            branches:
-              only: BRStaging
-
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: "PROD-"
-          filters:
-            branches:
-              only: main
