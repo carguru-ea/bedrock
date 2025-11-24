@@ -4,7 +4,7 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ============================================================  
+# ============================================================   
 # COMMANDS
 # ============================================================
 commands:
@@ -83,9 +83,6 @@ commands:
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
       
-                # -------------------------
-                # SAFE CANCEL - NEVER FAIL
-                # -------------------------
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
       
@@ -102,7 +99,6 @@ commands:
               echo "✔️ Safe cancel complete — continuing pipeline."
             fi
       
-            # Do not let this step fail
             true
 
 
@@ -134,7 +130,6 @@ commands:
               currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
-
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
@@ -184,15 +179,10 @@ commands:
             echo "FIRST_RUN=$FIRST_RUN"
             echo "CHANGES_FOUND=$CHANGES_FOUND"
 
-            # --------------------------
-            # Decide deploy type
-            # --------------------------
             if [ "$CHANGES_FOUND" = "true" ]; then
               echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
-
             else
-              # No delta
               if [ "$FIRST_RUN" = "true" ]; then
                 echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
@@ -204,9 +194,6 @@ commands:
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-            # --------------------------
-            # Run Deployment
-            # --------------------------
             echo "🚀 Running $DEPLOY_TYPE deployment..."
             sf project deploy start \
               --manifest package.xml \
@@ -224,7 +211,6 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            # Determine whether to create a tag
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
@@ -241,7 +227,6 @@ commands:
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
-
             else
               echo "No changes — skipping tag creation."
             fi
@@ -335,10 +320,10 @@ workflows:
 
       - deploy-intqa:
           context: sf-intqa
-          tag_prefix: "INTQA-"
+          tag_prefix: "CCS2202-"
           filters:
             branches:
-              only: BRInt
+              only: Feature/CSS-2202-v1
 
       - deploy-staging:
           context: sf-staging
