@@ -1,5 +1,5 @@
 /**
- * @description Test class for EncryptionUtility
+ * @description Test class for EncryptionUtilityk
  */
 @IsTest
 public class EncryptionUtilityTest {
