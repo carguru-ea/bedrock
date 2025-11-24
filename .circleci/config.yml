@@ -49,55 +49,17 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # DEPLOY MARKERS (LOG ONLY)
-  # ----------------------------------------------------------
-  deploy-marker-start:
-    parameters:
-      env:
-        type: string
-    steps:
-      - run:
-          name: "🔵 Deploy Marker START (<< parameters.env >>)"
-          command: |
-            echo "=========================================="
-            echo "🚀 DEPLOYMENT STARTED for << parameters.env >>"
-            echo "TIME: $(date)"
-            echo "=========================================="
-
-  deploy-marker-end:
-    parameters:
-      env:
-        type: string
-    steps:
-      - run:
-          name: "🟢 Deploy Marker END (<< parameters.env >>)"
-          command: |
-            echo "=========================================="
-            echo "✅ DEPLOYMENT COMPLETED for << parameters.env >>"
-            echo "TIME: $(date)"
-            echo "=========================================="
-
-  # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS + OFFICIAL CC MARKERS
+  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
-      env:
-        type: string
     steps:
 
-      # ----------- CircleCI Official Deployment START ----------
-      - run:
-          name: CircleCI Deployment Start
-          command: |
-            circleci-agent deployment start \
-              --component-name "<< parameters.env >>" \
-              --environment "<< parameters.env >>"
-            
-
-      # -------------------- CANCEL EXISTING DEPLOYS -------------------
+      # --------------------------------------------------------
+      # Check & Cancel Pending/InProgress Deployments
+      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -206,9 +168,6 @@ commands:
       # --------------------------------------------------------
       # Deploy (Delta or Full)
       # --------------------------------------------------------
-      - deploy-marker-start:
-          env: << parameters.env >>
-
       - run:
           name: Deploy Metadata
           command: |
@@ -236,37 +195,11 @@ commands:
             fi
 
             echo "🚀 Running $DEPLOY_TYPE deployment..."
-            set +e
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level NoTestRun \
               --wait 360
-            DEPLOY_EXIT=$?
-            set -e
-
-            echo "export DEPLOY_EXIT=$DEPLOY_EXIT" >> $BASH_ENV
-
-      - deploy-marker-end:
-          env: << parameters.env >>
-
-      # ---------- CircleCI Official Deployment END (SUCCESS / FAILURE) ----------
-      - run:
-          name: Register Deployment Status
-          command: |
-            source $BASH_ENV
-            if [ "$DEPLOY_EXIT" -eq 0 ]; then
-              circleci-agent deployment end \
-                --component-name "<< parameters.env >>" \
-                --environment "<< parameters.env >>" \
-                --status success
-            else
-              circleci-agent deployment end \
-                --component-name "<< parameters.env >>" \
-                --environment "<< parameters.env >>" \
-                --status failure
-              exit 1
-            fi
 
 
       # --------------------------------------------------------
@@ -277,11 +210,6 @@ commands:
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
-            if [ "$DEPLOY_EXIT" -ne 0 ]; then
-              echo "Skipping tag creation due to failed deploy"
-              exit 0
-            fi
 
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
@@ -303,6 +231,7 @@ commands:
               echo "No changes — skipping tag creation."
             fi
 
+
 # ============================================================
 # JOBS PER ORG
 # ============================================================
@@ -321,9 +250,9 @@ jobs:
       - jwt-auth:
           target_env: INTQA
       - deploy-with-tags:
-          env: "INTQA"
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -348,9 +277,9 @@ jobs:
       - jwt-auth:
           target_env: STAGINGUAT
       - deploy-with-tags:
-          env: "STAGING"
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -375,8 +304,9 @@ jobs:
       - jwt-auth:
           target_env: PROD
       - deploy-with-tags:
-          env: "PROD"
           tag_prefix: << parameters.tag_prefix >>
+
+
 
 
 # ============================================================ 
