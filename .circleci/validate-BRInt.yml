@@ -7,7 +7,10 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - validate-devint
+      - validate-devint:
+          filters:
+            branches:
+              only: BRInt        # <- base branch must be BRInt
 
 jobs:
   validate-devint:
@@ -36,7 +39,7 @@ jobs:
             sf auth sfdxurl store -f token.txt -a targetOrg -d
 
       - run:
-          name: Validate Metadata
+          name: Validate Metadata (Dry Run)
           command: |
             cd Bedrock/Bedrock
             sf project deploy start \
