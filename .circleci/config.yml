@@ -302,3 +302,109 @@ commands:
             else
               echo "No changes — skipping tag creation."
             fi
+
+# ============================================================
+# JOBS PER ORG
+# ============================================================
+jobs:
+
+  # ---------------- INTQA ----------------
+  deploy-intqa:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy-with-tags:
+          env: "INTQA"
+          tag_prefix: << parameters.tag_prefix >>
+
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+
+
+  # ---------------- STAGING ----------------
+  deploy-staging:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - deploy-with-tags:
+          env: "STAGING"
+          tag_prefix: << parameters.tag_prefix >>
+
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+
+
+  # ---------------- PROD ----------------
+  deploy-main:
+    parameters:
+      tag_prefix:
+        type: string
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: PROD
+      - deploy-with-tags:
+          env: "PROD"
+          tag_prefix: << parameters.tag_prefix >>
+
+
+# ============================================================ 
+# WORKFLOWS
+# ============================================================
+workflows:
+  version: 2
+
+  build-test-deploy:
+    jobs:
+
+      - deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "INTQA-"
+          filters:
+            branches:
+              only: BRInt
+
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          filters:
+            branches:
+              only: BRStaging
+
+      - deploy-main:
+          context: sf-prod
+          tag_prefix: "PROD-"
+          filters:
+            branches:
+              only: main
