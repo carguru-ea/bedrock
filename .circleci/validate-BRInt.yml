@@ -7,7 +7,10 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - validate-devint
+      - validate-devint:
+          filters:
+            branches:
+              only: BRInt        # <- base branch must be BRInt
 
 jobs:
   validate-devint:
@@ -25,18 +28,27 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-      - run:
-          name: Write token to file
-          command: |
-            echo "$SFDX_DEVINT_AUTH_URL" > token.txt
 
       - run:
-          name: Authenticate to DevHub
+          name: Decode JWT key for << parameters.target_env >>
           command: |
-            sf auth sfdxurl store -f token.txt -a targetOrg -d
+            echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
+            chmod 600 server.key
 
       - run:
-          name: Validate Metadata
+          name: Authenticate to Salesforce (<< parameters.target_env >>)
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_INTQA}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_INTQA}" \
+              --instance-url "${SF_INSTANCEURL_INTQA}" \
+              --alias target \
+              --set-default
+
+      - run:
+          name: Validate Metadata (Dry Run)
           command: |
             cd Bedrock/Bedrock
             sf project deploy start \
