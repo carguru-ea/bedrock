@@ -4,66 +4,39 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ------------------------------------------------------------
-# WORKFLOWS — Trigger only on PRs
-# ------------------------------------------------------------
 workflows:
   devint-validations:
-    when:
-      equal: [ "pull_request", << pipeline.trigger_source >> ]
     jobs:
       - validate-devint
 
-# ------------------------------------------------------------
-# JOB: Validate Salesforce metadata
-# ------------------------------------------------------------
 jobs:
   validate-devint:
     docker:
       - image: cimg/base:stable
-
     steps:
-      # ------------------------------------------------------
-      # Checkout PR source branch
-      # ------------------------------------------------------
       - checkout
 
-      # ------------------------------------------------------
-      # Install Node.js
-      # ------------------------------------------------------
       - node/install:
           node-version: "20"
 
-      # ------------------------------------------------------
-      # Install SF CLI
-      # ------------------------------------------------------
       - run:
           name: Install Salesforce CLI
           command: |
             npm install -g @salesforce/cli
             sf --version
 
-      # ------------------------------------------------------
-      # Write DevInt auth URL (GitHub secret equivalent) 
-      # ------------------------------------------------------
       - run:
           name: Write token to file
           command: |
             echo "$SFDX_DEVINT_AUTH_URL" > token.txt
 
-      # ------------------------------------------------------
-      # Authenticate using SFDX auth URL
-      # ------------------------------------------------------
       - run:
           name: Authenticate to DevHub
           command: |
             sf auth sfdxurl store -f token.txt -a targetOrg -d
 
-      # ------------------------------------------------------
-      # Perform Validation (dry-run)
-      # ------------------------------------------------------
       - run:
-          name: Validate Metadata (Dry Run)
+          name: Validate Metadata
           command: |
             cd Bedrock/Bedrock
             sf project deploy start \
@@ -73,24 +46,10 @@ jobs:
               --target-org targetOrg \
               -d force-app
 
-      # ------------------------------------------------------
-      # Slack Notifications (Success)
-      # ------------------------------------------------------
       - slack/notify:
           event: pass
           template: basic_success_1
-          custom:
-            title: "DevInt Validation — SUCCESS"
-            text: "PR Validation succeeded for Pipeline: $CIRCLE_PIPELINE_ID"
-          channel: $SLACK_DEFAULT_CHANNEL
 
-      # ------------------------------------------------------
-      # Slack Notifications (Failure)
-      # ------------------------------------------------------
       - slack/notify:
           event: fail
           template: basic_fail_1
-          custom:
-            title: "DevInt Validation — FAILED"
-            text: "PR Validation failed for Pipeline: $CIRCLE_PIPELINE_ID"
-          channel: $SLACK_DEFAULT_CHANNEL
