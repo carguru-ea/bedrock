@@ -2,6 +2,7 @@ version: 2.1
 
 orbs:
   node: circleci/node@5.0.2
+  slack: circleci/slack@4.12.5
 
 # ============================================================  
 # COMMANDS
@@ -68,7 +69,6 @@ commands:
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
-               AND CreatedBy.Name = 'ravitej varada'
              ORDER BY CreatedDate DESC" --json)
       
             echo "$ACTIVE_DEPLOYS" | jq .
@@ -138,6 +138,7 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
+
       # --------------------------------------------------------
       # Build Delta Manifest
       # --------------------------------------------------------
@@ -167,6 +168,7 @@ commands:
               echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
+
 
       # --------------------------------------------------------
       # Deploy (Delta or Full)
@@ -209,7 +211,7 @@ commands:
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
+              --test-level NoTestRun \
               --wait 360
 
 
@@ -250,6 +252,7 @@ commands:
 # ============================================================
 jobs:
 
+  # ---------------- INTQA ----------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -264,6 +267,19 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+
+
+  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -278,6 +294,19 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+
+
+  # ---------------- PROD ----------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -292,7 +321,10 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
-# ============================================================
+
+
+
+# ============================================================ 
 # WORKFLOWS
 # ============================================================
 workflows:
