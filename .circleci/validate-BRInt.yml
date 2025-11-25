@@ -7,10 +7,7 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - validate-devint:
-          filters:
-            branches:
-              only: BRInt        # run only when PR target = BRInt
+      - validate-devint
 
 jobs:
   validate-devint:
@@ -29,32 +26,24 @@ jobs:
             sf --version
 
       - run:
-          name: Decode JWT key for INTQA
+          name: Write token to file
           command: |
-            echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
-              || echo "${JWT_KEY_INTQA}" > server.key
-            chmod 600 server.key
+            echo "$SFDX_DEVINT_AUTH_URL" > token.txt
 
       - run:
-          name: Authenticate to Salesforce INTQA
+          name: Authenticate to DevHub
           command: |
-            sf org login jwt \
-              --username "${SF_USERNAME_INTQA}" \
-              --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_INTQA}" \
-              --instance-url "${SF_INSTANCEURL_INTQA}" \
-              --alias target \
-              --set-default
+            sf auth sfdxurl store -f token.txt -a targetOrg -d
 
       - run:
-          name: Validate Metadata (Dry Run)
+          name: Validate Metadata
           command: |
             cd Bedrock/Bedrock
             sf project deploy start \
               --dry-run \
               --test-level NoTestRun \
               --wait 360 \
-              --target-org target \
+              --target-org targetOrg \
               -d force-app
 
       - slack/notify:
