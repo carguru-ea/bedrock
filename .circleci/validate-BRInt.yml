@@ -4,21 +4,28 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
+# ----------------------------------------------------------
+# WORKFLOW — runs automatically because CircleCI trigger
+# is set to "PR opened" in the CircleCI UI.
+# ----------------------------------------------------------
 workflows:
   devint-validations:
     jobs:
-      - validate-devint:
-          filters:
-            branches:
-              only: BRInt        # run only when PR target = BRInt
+      - validate-devint
 
+# ----------------------------------------------------------
+# JOB: Validate Salesforce metadata
+# ----------------------------------------------------------
 jobs:
   validate-devint:
     docker:
       - image: cimg/base:stable
+
     steps:
+      # Checkout PR source branch
       - checkout
 
+      # Install Node & SF CLI
       - node/install:
           node-version: "20"
 
@@ -28,6 +35,7 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
+      # Decode JWT key
       - run:
           name: Decode JWT key for INTQA
           command: |
@@ -35,6 +43,7 @@ jobs:
               || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
+      # Salesforce authentication
       - run:
           name: Authenticate to Salesforce INTQA
           command: |
@@ -46,6 +55,7 @@ jobs:
               --alias target \
               --set-default
 
+      # Perform dry-run validation (no deployment)
       - run:
           name: Validate Metadata (Dry Run)
           command: |
@@ -57,6 +67,7 @@ jobs:
               --target-org target \
               -d force-app
 
+      # Slack notifications
       - slack/notify:
           event: pass
           template: basic_success_1
