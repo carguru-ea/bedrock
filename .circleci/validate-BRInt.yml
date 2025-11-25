@@ -4,19 +4,27 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
+# ----------------------------------------------------------
+# WORKFLOW — triggers on PR creation in CircleCI UI settings
+# ----------------------------------------------------------
 workflows:
   devint-validations:
     jobs:
       - DevInt-Validation
 
+# ----------------------------------------------------------
+# JOB: Validate Salesforce metadata (DELTA-ONLY DRY RUN)
+# ----------------------------------------------------------
 jobs:
   DevInt-Validation:
     docker:
       - image: cimg/base:stable
 
     steps:
+      # Checkout PR branch
       - checkout
 
+      # Install Node + SF CLI
       - node/install:
           node-version: "20"
 
@@ -48,47 +56,52 @@ jobs:
               --set-default
 
       # ----------------------------------------------------------
-      # DELTA DIFF GENERATION
+      # DELTA ENGINE (NO GITHUB API)
       # ----------------------------------------------------------
       - run:
-          name: Compute Delta (changed files only)
+          name: Compute Delta Without GitHub API
           command: |
-            echo "🔍 Computing delta..."
-            
-            # Identify the PR target branch from CircleCI
-            TARGET_BRANCH="${CIRCLE_BRANCH}"
-            echo "Target branch: $TARGET_BRANCH"
+            echo "🔍 Extracting PR number from CIRCLE_PULL_REQUEST..."
+            echo "CIRCLE_PULL_REQUEST=$CIRCLE_PULL_REQUEST"
 
-            # Fetch target branch
-            git fetch origin $TARGET_BRANCH
+            PR_NUMBER=$(echo "$CIRCLE_PULL_REQUEST" | sed 's#.*/pull/##')
+            echo "PR number detected: $PR_NUMBER"
 
-            # Create a delta folder
+            echo "🔄 Fetching GitHub PR merge ref..."
+            git fetch origin +refs/pull/$PR_NUMBER/merge:refs/remotes/origin/pr/$PR_NUMBER
+
+            # Show what merge ref is fetched
+            echo "Fetched PR merge ref:"
+            git log --oneline -n 1 origin/pr/$PR_NUMBER
+
+            echo "🔍 Computing delta diff vs PR merge ref..."
             mkdir -p delta
 
-            # Diff between PR HEAD and target branch
-            git diff --name-only origin/$TARGET_BRANCH...HEAD \
+            git diff --name-only origin/pr/$PR_NUMBER...HEAD \
               | grep "^force-app/" \
               | while read file; do
+                  echo "Copying: $file"
                   mkdir -p "delta/$(dirname "$file")"
                   cp "$file" "delta/$file"
                 done
 
-            echo "Delta files:"
-            find delta -type f
+            echo "----- DELTA FILES DETECTED -----"
+            find delta -type f || true
 
-            # Fail if no delta
             if [ -z "$(find delta -type f)" ]; then
               echo "❌ No delta detected — failing validation."
               exit 1
             fi
 
+            echo "Delta ready ✔"
+
       # ----------------------------------------------------------
-      # DRY RUN VALIDATION WITH DELTA ONLY
+      # DRY RUN VALIDATION (DELTA ONLY)
       # ----------------------------------------------------------
       - run:
           name: Validate Metadata (Dry Run — Delta Only)
           command: |
-            echo "Running dry-run deploy on delta folder..."
+            echo "🚀 Running Salesforce dry-run deploy on delta folder..."
             cd delta
 
             sf project deploy start \
@@ -107,3 +120,4 @@ jobs:
       - slack/notify:
           event: fail
           template: basic_fail_1
+
