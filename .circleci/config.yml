@@ -3,19 +3,13 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
-  path-filtering: circleci/path-filtering@0.1.4
-
-
-# ============================================================
-# PARAMETERS (for path-filtering)
-# ============================================================
+  path-filtering: circleci/path-filtering@3.0.0
+  
 parameters:
-  forceapp_changed:
+  run-salesforce-deploys:
     type: boolean
     default: false
-
-
-# ============================================================
+# ============================================================   
 # COMMANDS
 # ============================================================
 commands:
@@ -68,7 +62,9 @@ commands:
         type: string
     steps:
 
-      # Cancel existing deployments
+      # --------------------------------------------------------
+      # Check & Cancel Pending/InProgress Deployments
+      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -110,7 +106,10 @@ commands:
       
             true
 
+
+      # --------------------------------------------------------
       # Identify most recent tag
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -139,7 +138,10 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # Build Manifest
+
+      # --------------------------------------------------------
+      # Build Delta Manifest
+      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -167,7 +169,10 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+
+      # --------------------------------------------------------
       # Deploy (Delta or Full)
+      # --------------------------------------------------------
       - run:
           name: Deploy Metadata
           command: |
@@ -201,7 +206,10 @@ commands:
               --test-level NoTestRun \
               --wait 360
 
+
+      # --------------------------------------------------------
       # Create New Tag
+      # --------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
@@ -229,23 +237,10 @@ commands:
             fi
 
 
-
 # ============================================================
 # JOBS PER ORG
 # ============================================================
 jobs:
-
-  # ---------------- Path filtering job ----------------
-  check-forceapp-changes:
-    docker:
-      - image: cimg/base:stable
-    steps:
-      - checkout
-      - path-filtering/filter:
-          base-revision: main
-          mapping: |
-            force-app/.* forceapp_changed true
-
 
   # ---------------- INTQA ----------------
   deploy-intqa:
@@ -262,6 +257,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -271,6 +267,7 @@ jobs:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+
 
   # ---------------- STAGING ----------------
   deploy-staging:
@@ -287,6 +284,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -296,6 +294,7 @@ jobs:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+
 
   # ---------------- PROD ----------------
   deploy-main:
@@ -314,24 +313,33 @@ jobs:
 
 
 
-# ============================================================
+
+# ============================================================ 
 # WORKFLOWS
 # ============================================================
 workflows:
   version: 2
-  build-test-deploy:
-    jobs:
-      - check-forceapp-changes
+  filter-on-changes:
+      jobs:
+        - path-filtering/filter:
+            base-revision: main
+            # continuation config that will run your deploy jobs
+            config-path: .circleci/continue_config.yml
+            # if any file under force-app/ changes, set run-salesforce-deploys=true
+            mapping: |
+              force-app/.* run-salesforce-deploys true
 
+  build-test-deploy:
+    when: << pipeline.parameters.run-salesforce-deploys >>
+    jobs:
       - deploy-intqa:
-          when: << pipeline.parameters.forceapp_changed >>
           context: sf-intqa
           tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
+
       - deploy-staging:
-          when: << pipeline.parameters.forceapp_changed >>
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
           filters:
@@ -339,7 +347,6 @@ workflows:
               only: BRStaging
 
       - deploy-main:
-          when: << pipeline.parameters.forceapp_changed >>
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
