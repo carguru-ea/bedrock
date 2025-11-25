@@ -324,10 +324,7 @@ workflows:
           filters:
             branches:
               only: BRInt
-            paths:
-              only:
-                - force-app/*
-                - force-app/**/*
+
 
       - deploy-staging:
           context: sf-staging
@@ -335,17 +332,11 @@ workflows:
           filters:
             branches:
               only: BRStaging
-            paths:
-              only:
-                - force-app/*
-                - force-app/**/*
+        
       - deploy-main:
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
             branches:
               only: main
-            paths:
-              only:
-                - force-app/*
-                - force-app/**/*
+
