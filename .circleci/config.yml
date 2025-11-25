@@ -4,11 +4,7 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
   path-filtering: circleci/path-filtering@3.0.0
-  
-parameters:
-  run-salesforce-deploys:
-    type: boolean
-    default: false
+
 # ============================================================   
 # COMMANDS
 # ============================================================
@@ -330,7 +326,6 @@ workflows:
               force-app/.* run-salesforce-deploys true
 
   build-test-deploy:
-    when: << pipeline.parameters.run-salesforce-deploys >>
     jobs:
       - deploy-intqa:
           context: sf-intqa
