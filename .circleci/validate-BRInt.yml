@@ -5,21 +5,16 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ----------------------------------------------------------
-# WORKFLOW — Runs ONLY for PR → BRInt
+# WORKFLOW — runs automatically because CircleCI trigger
+# is set to "PR opened" in the CircleCI UI.
 # ----------------------------------------------------------
 workflows:
   devint-validations:
     jobs:
-      - DevInt-Validation:
-          filters:
-            branches:
-              ignore: /.*/
-            pull-requests:
-              only:
-                - BRInt
+      - DevInt-Validation
 
 # ----------------------------------------------------------
-# JOB: Salesforce Delta Validation on PR
+# JOB: Validate Salesforce metadata
 # ----------------------------------------------------------
 jobs:
   DevInt-Validation:
@@ -27,8 +22,10 @@ jobs:
       - image: cimg/base:stable
 
     steps:
+      # Checkout PR source branch
       - checkout
 
+      # Install Node & SF CLI
       - node/install:
           node-version: "20"
 
@@ -38,6 +35,7 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
+      # Decode JWT key
       - run:
           name: Decode JWT key for INTQA
           command: |
@@ -45,6 +43,7 @@ jobs:
               || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
+      # Salesforce authentication
       - run:
           name: Authenticate to Salesforce INTQA
           command: |
@@ -56,60 +55,19 @@ jobs:
               --alias target \
               --set-default
 
-      # ----------------------------------------------------------
-      # Detect Delta Changes Between PR Branch and BRInt
-      # ----------------------------------------------------------
+      # Perform dry-run validation (no deployment)
       - run:
-          name: Fetch BRInt branch
-          command: |
-            git fetch origin BRInt:BRInt
-
-      - run:
-          name: Compute Delta Files
-          command: |
-            git diff --name-only BRInt...HEAD > delta.txt
-            echo "Changed files:"
-            cat delta.txt
-
-      - run:
-          name: Filter Metadata Files
-          command: |
-            grep -E '(\.cls$|\.trigger$|\.xml$|\.js$|\.html$|\.css$)' delta.txt > delta_meta.txt || true
-            echo "Metadata files:"
-            cat delta_meta.txt
-
-      - run:
-          name: Build Delta Deploy Folder
-          command: |
-            mkdir -p delta
-            if [ -s delta_meta.txt ]; then
-              xargs -I {} cp --parents "{}" delta/ < delta_meta.txt
-            else
-              echo "No metadata changes found — skipping delta build."
-            fi
-
-      # ----------------------------------------------------------
-      # Dry Run Validation
-      # ----------------------------------------------------------
-      - run:
-          name: Validate Delta (Dry Run)
+          name: Validate Metadata (Dry Run)
           command: |
             cd bedrock-main/Bedrock
-            if [ -d "../delta" ] && [ "$(ls -A ../delta)" ]; then
-              echo "Running delta dry run..."
-              sf project deploy start \
-                --dry-run \
-                --test-level NoTestRun \
-                --wait 360 \
-                --target-org target \
-                -d ../delta
-            else
-              echo "No delta components — skipping validation."
-            fi
+            sf project deploy start \
+              --dry-run \
+              --test-level NoTestRun \
+              --wait 360 \
+              --target-org target \
+              -d force-app
 
-      # ----------------------------------------------------------
-      # Slack Notifications
-      # ----------------------------------------------------------
+      # Slack notifications
       - slack/notify:
           event: pass
           template: basic_success_1
