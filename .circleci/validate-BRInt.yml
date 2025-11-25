@@ -11,13 +11,13 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - validate-devint
+      - DevInt-Validation
 
 # ----------------------------------------------------------
 # JOB: Validate Salesforce metadata
 # ----------------------------------------------------------
 jobs:
-  validate-devint:
+  DevInt-Validation:
     docker:
       - image: cimg/base:stable
 
@@ -59,7 +59,7 @@ jobs:
       - run:
           name: Validate Metadata (Dry Run)
           command: |
-            cd cd bedrock-main/Bedrock
+            cd bedrock-main/Bedrock
             sf project deploy start \
               --dry-run \
               --test-level NoTestRun \
