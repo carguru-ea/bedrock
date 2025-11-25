@@ -340,4 +340,5 @@ workflows:
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
+            branches:
               only: main
