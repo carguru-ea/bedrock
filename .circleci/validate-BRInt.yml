@@ -59,33 +59,31 @@ jobs:
       # DELTA ENGINE (NO GITHUB API)
       # ----------------------------------------------------------
       - run:
-          name: Compute Delta Without GitHub API
+          name: Compute Delta Using CIRCLE_BASE_REVISION (No API, No PR refs)
           command: |
-            echo "🔍 Extracting PR number from CIRCLE_PULL_REQUEST..."
-            echo "CIRCLE_PULL_REQUEST=$CIRCLE_PULL_REQUEST"
+            echo "🔍 CIRCLE_BASE_REVISION = $CIRCLE_BASE_REVISION"
 
-            PR_NUMBER=$(echo "$CIRCLE_PULL_REQUEST" | sed 's#.*/pull/##')
-            echo "PR number detected: $PR_NUMBER"
+            if [ -z "$CIRCLE_BASE_REVISION" ]; then
+              echo "❌ CIRCLE_BASE_REVISION is empty — cannot compute delta."
+              exit 1
+            fi
 
-            echo "🔄 Fetching GitHub PR merge ref..."
-            git fetch origin +refs/pull/$PR_NUMBER/merge:refs/remotes/origin/pr/$PR_NUMBER
+            echo "🔄 Fetching full git history (needed for base revision)"
+            git fetch --unshallow || true
+            git fetch origin --prune
 
-            # Show what merge ref is fetched
-            echo "Fetched PR merge ref:"
-            git log --oneline -n 1 origin/pr/$PR_NUMBER
-
-            echo "🔍 Computing delta diff vs PR merge ref..."
+            echo "🔍 Computing delta..."
             mkdir -p delta
 
-            git diff --name-only origin/pr/$PR_NUMBER...HEAD \
+            git diff --name-only $CIRCLE_BASE_REVISION...HEAD \
               | grep "^force-app/" \
               | while read file; do
-                  echo "Copying: $file"
+                  echo "Copying $file"
                   mkdir -p "delta/$(dirname "$file")"
                   cp "$file" "delta/$file"
                 done
 
-            echo "----- DELTA FILES DETECTED -----"
+            echo "--- Delta Files ---"
             find delta -type f || true
 
             if [ -z "$(find delta -type f)" ]; then
@@ -93,7 +91,8 @@ jobs:
               exit 1
             fi
 
-            echo "Delta ready ✔"
+            echo "Delta computation ✔ done"
+
 
       # ----------------------------------------------------------
       # DRY RUN VALIDATION (DELTA ONLY)
