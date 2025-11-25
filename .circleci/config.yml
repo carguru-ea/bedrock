@@ -1,15 +1,21 @@
 version: 2.1
 
-parameters:
-  run_deploy:
-    type: boolean
-    default: false
-
 orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
+  path-filtering: circleci/path-filtering@1.0.2
 
-# ============================================================   
+
+# ============================================================
+# PARAMETERS (for path-filtering)
+# ============================================================
+parameters:
+  forceapp_changed:
+    type: boolean
+    default: false
+
+
+# ============================================================
 # COMMANDS
 # ============================================================
 commands:
@@ -62,16 +68,14 @@ commands:
         type: string
     steps:
 
-      # --------------------------------------------------------
-      # Cancel Existing Deploys
-      # --------------------------------------------------------
+      # Cancel existing deployments
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
-            echo "🔍 Checking for active deployments"
+            echo "🔍 Checking for active deployments by 'ravitej varada'"
       
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
-            "SELECT Id, Status
+            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
              ORDER BY CreatedDate DESC" --json)
@@ -83,46 +87,59 @@ commands:
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
-              echo "⚠️ Active deployments found — canceling..."
+              echo "⚠️ Deployments found — attempting cancel..."
       
               for deployId in $DEPLOY_IDS; do
-                echo "⛔ Canceling: $deployId"
-                sf project deploy cancel --job-id "$deployId" || true
+                echo "⛔ Canceling deployment: $deployId"
+      
+                CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
+                echo "$CANCEL_OUTPUT"
+      
+                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
+                  echo "ℹ️ Deployment $deployId already completed — skipping."
+                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
+                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
+                else
+                  echo "✔️ Cancel command processed for $deployId"
+                fi
+      
               done
       
-              echo "✔️ Cancel complete — continuing."
+              echo "✔️ Safe cancel complete — continuing pipeline."
             fi
+      
+            true
 
-      # --------------------------------------------------------
-      # Identify Latest Tag
-      # --------------------------------------------------------
+      # Identify most recent tag
       - run:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
+            echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
 
             currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
+              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "🔍 No tags — First run"
+              echo "🔍 No tags found — FIRST RUN"
               currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
+      # Build Manifest
       - run:
           name: Build Manifest
           command: |
@@ -132,8 +149,12 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
-              | grep 'force-app/' || true > files.txt
+              | grep 'force-app/' \
+              | sed -E 's#.*(force-app/.*)#\1#' \
+              > files.txt || true
 
             if [ -s files.txt ]; then
               echo "Changes detected:"
@@ -146,9 +167,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy
-      # --------------------------------------------------------
+      # Deploy (Delta or Full)
       - run:
           name: Deploy Metadata
           command: |
@@ -157,24 +176,32 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+
             if [ "$CHANGES_FOUND" = "true" ]; then
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level NoTestRun \
-                --wait 360
+              echo "🔄 DELTA deploy"
+              DEPLOY_TYPE="DELTA"
             else
+              if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+                DEPLOY_TYPE="FULL_FIRST_RUN"
+              else
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
+                DEPLOY_TYPE="FULL_NO_TAG"
+              fi
+
               sf project generate manifest --source-dir force-app > /dev/null
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level NoTestRun \
-                --wait 360
             fi
 
-      # --------------------------------------------------------
-      # Create Tag
-      # --------------------------------------------------------
+            echo "🚀 Running $DEPLOY_TYPE deployment..."
+            sf project deploy start \
+              --manifest package.xml \
+              --target-org target \
+              --test-level NoTestRun \
+              --wait 360
+
+      # Create New Tag
       - run:
           name: Create & Push Tag
           command: |
@@ -202,11 +229,23 @@ commands:
             fi
 
 
+
 # ============================================================
-# JOBS
+# JOBS PER ORG
 # ============================================================
 jobs:
 
+  # ---------------- Path filtering job ----------------
+  check-forceapp-changes:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - path-filtering/check:
+          mapping: |
+            force-app/.* forceapp_changed true
+
+  # ---------------- INTQA ----------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -220,13 +259,18 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
 
+  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -240,13 +284,18 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
 
+  # ---------------- PROD ----------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -262,21 +311,25 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
 
-# ============================================================ 
+
+# ============================================================
 # WORKFLOWS
 # ============================================================
 workflows:
   version: 2
 
-  run-deploy-workflow:
-    when: << pipeline.parameters.run_deploy >>
+  build-test-deploy:
     jobs:
+
+      - check-forceapp-changes
+
       - deploy-intqa:
           context: sf-intqa
-          tag_prefix: "INTQA-"
+          tag_prefix: "CCS2202-"
           filters:
             branches:
-              only: BRInt
+              only: Feature/CSS-2202-v1
+          when: << pipeline.parameters.forceapp_changed >>
 
       - deploy-staging:
           context: sf-staging
@@ -284,6 +337,7 @@ workflows:
           filters:
             branches:
               only: BRStaging
+          when: << pipeline.parameters.forceapp_changed >>
 
       - deploy-main:
           context: sf-prod
@@ -291,3 +345,4 @@ workflows:
           filters:
             branches:
               only: main
+          when: << pipeline.parameters.forceapp_changed >>
