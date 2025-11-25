@@ -59,7 +59,7 @@ jobs:
       - run:
           name: Validate Metadata (Dry Run)
           command: |
-            cd Bedrock/Bedrock
+            cd bedrock-main/Bedrock
             sf project deploy start \
               --dry-run \
               --test-level NoTestRun \
