@@ -14,8 +14,11 @@ workflows:
       - DevInt-Validation:
           filters:
             branches:
+              ignore: /.*/      # ignore ALL branch pushes
+            pull-requests:
               only:
-                - BRInt
+                - BRInt        # RUN ONLY when PR TARGET = BRInt
+
 
 
 
