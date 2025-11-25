@@ -237,6 +237,30 @@ commands:
 # ============================================================
 jobs:
 
+  detect-changes:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+
+      - run:
+          name: Detect changes in force-app
+          command: |
+            echo "🔍 Checking for changes inside force-app/..."
+
+            git fetch origin $CIRCLE_BRANCH
+
+            CHANGED=$(git diff --name-only origin/$CIRCLE_BRANCH HEAD | grep "^force-app/" || true)
+
+            if [ -z "$CHANGED" ]; then
+              echo "🛑 No changes detected in force-app/. Skipping deploy jobs."
+              circleci step halt
+            else
+              echo "✅ Changes detected:"
+              echo "$CHANGED"
+            fi
+
+
   # ---------------- INTQA ----------------
   deploy-intqa:
     parameters:
@@ -318,15 +342,26 @@ workflows:
   build-test-deploy:
     jobs:
 
+      - detect-changes:
+          filters:
+            branches:
+              only:
+                - BRInt
+                - BRStaging
+                - main
+
       - deploy-intqa:
+          requires:
+            - detect-changes
           context: sf-intqa
           tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
 
-
       - deploy-staging:
+          requires:
+            - detect-changes
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
           filters:
@@ -334,9 +369,13 @@ workflows:
               only: BRStaging
         
       - deploy-main:
+          requires:
+            - detect-changes
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
             branches:
+              only: main
+
               only: main
 
