@@ -1,5 +1,10 @@
 version: 2.1
 
+parameters:
+  run_deploy:
+    type: boolean
+    default: false
+
 orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
@@ -100,7 +105,6 @@ commands:
             fi
       
             true
-
 
       # --------------------------------------------------------
       # Identify most recent tag
@@ -308,14 +312,14 @@ jobs:
 
 
 
-
 # ============================================================ 
 # WORKFLOWS
 # ============================================================
 workflows:
   version: 2
 
-  build-test-deploy:
+  run-deploy-workflow:
+    when: << pipeline.parameters.run_deploy >>
     jobs:
 
       - deploy-intqa:
@@ -336,5 +340,4 @@ workflows:
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
-            branches:
               only: main
