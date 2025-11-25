@@ -11,13 +11,13 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - validate-devint
+      - DevInt-Validation
 
 # ----------------------------------------------------------
 # JOB: Validate Salesforce metadata
 # ----------------------------------------------------------
 jobs:
-  validate-devint:
+  DevInt-Validation:
     docker:
       - image: cimg/base:stable
 
