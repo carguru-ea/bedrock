@@ -325,10 +325,10 @@ workflows:
 
       - deploy-intqa:
           context: sf-intqa
-          tag_prefix: "CCS2202-"
+          tag_prefix: "INTQA-"
           filters:
             branches:
-              only: Feature/CSS-2202-v1
+              only: BRInt
           when: << pipeline.parameters.forceapp_changed >>
 
       - deploy-staging:
