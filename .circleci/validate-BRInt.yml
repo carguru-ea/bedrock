@@ -5,8 +5,8 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ----------------------------------------------------------
-# WORKFLOW — runs automatically because CircleCI trigger
-# is set to "PR opened" in the CircleCI UI.
+# WORKFLOW — Runs ONLY when a PR targets BRInt
+# (Push events are ignored completely)
 # ----------------------------------------------------------
 workflows:
   devint-validations:
@@ -14,16 +14,13 @@ workflows:
       - DevInt-Validation:
           filters:
             branches:
-              ignore: /.*/      # ignore ALL branch pushes
+              ignore: /.*/      # don't run on pushes
             pull-requests:
               only:
-                - BRInt        # RUN ONLY when PR TARGET = BRInt
-
-
-
+                - BRInt        # run ONLY when PR target = BRInt
 
 # ----------------------------------------------------------
-# JOB: Validate Salesforce metadata
+# JOB: Salesforce Delta Validation on PR
 # ----------------------------------------------------------
 jobs:
   DevInt-Validation:
@@ -31,10 +28,11 @@ jobs:
       - image: cimg/base:stable
 
     steps:
-      # Checkout PR source branch
       - checkout
 
-      # Install Node & SF CLI
+      # ----------------------------------------------
+      # Install Node + Salesforce CLI
+      # ----------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -44,7 +42,9 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-      # Decode JWT key
+      # ----------------------------------------------
+      # JWT Authentication
+      # ----------------------------------------------
       - run:
           name: Decode JWT key for INTQA
           command: |
@@ -52,7 +52,6 @@ jobs:
               || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
-      # Salesforce authentication
       - run:
           name: Authenticate to Salesforce INTQA
           command: |
@@ -64,11 +63,11 @@ jobs:
               --alias target \
               --set-default
 
-            # ----------------------------------------------------------
-      # Detect Delta Changes Between PR Branch and BRInt
-      # ----------------------------------------------------------
+      # ----------------------------------------------
+      # Fetch BRInt so we can detect PR delta
+      # ----------------------------------------------
       - run:
-          name: Fetch Target Branch
+          name: Fetch BRInt branch
           command: |
             git fetch origin BRInt:BRInt
 
@@ -83,7 +82,7 @@ jobs:
           name: Filter Metadata Files
           command: |
             grep -E '(\.cls$|\.trigger$|\.xml$|\.js$|\.html$|\.css$)' delta.txt > delta_meta.txt || true
-            echo "Delta metadata files:"
+            echo "Metadata files:"
             cat delta_meta.txt
 
       - run:
@@ -93,18 +92,18 @@ jobs:
             if [ -s delta_meta.txt ]; then
               xargs -I {} cp --parents "{}" delta/ < delta_meta.txt
             else
-              echo "No metadata changes found — delta deploy not required."
+              echo "No metadata changes found — skipping delta build."
             fi
 
-      # ----------------------------------------------------------
-      # DRY RUN ON DELTA ONLY
-      # ----------------------------------------------------------
+      # ----------------------------------------------
+      # DRY RUN VALIDATION
+      # ----------------------------------------------
       - run:
-          name: Validate Delta Metadata (Dry Run)
+          name: Validate Delta (Dry Run)
           command: |
-             cd bedrock-main/Bedrock
+            cd bedrock-main/Bedrock
             if [ -d "../delta" ] && [ "$(ls -A ../delta)" ]; then
-              echo "Running delta dry-run validation..."
+              echo "Running delta dry run..."
               sf project deploy start \
                 --dry-run \
                 --test-level NoTestRun \
@@ -115,8 +114,9 @@ jobs:
               echo "No delta components — skipping validation."
             fi
 
-
-      # Slack notifications
+      # ----------------------------------------------
+      # Slack Notifications
+      # ----------------------------------------------
       - slack/notify:
           event: pass
           template: basic_success_1
@@ -124,5 +124,3 @@ jobs:
       - slack/notify:
           event: fail
           template: basic_fail_1
-           
-             
