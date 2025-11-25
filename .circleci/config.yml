@@ -241,9 +241,11 @@ jobs:
       - image: cimg/base:stable
     steps:
       - checkout
-      - path-filtering/check:
+      - path-filtering/filter:
+          base-revision: main
           mapping: |
             force-app/.* forceapp_changed true
+
 
   # ---------------- INTQA ----------------
   deploy-intqa:
@@ -317,32 +319,29 @@ jobs:
 # ============================================================
 workflows:
   version: 2
-
   build-test-deploy:
     jobs:
-
       - check-forceapp-changes
 
       - deploy-intqa:
+          when: << pipeline.parameters.forceapp_changed >>
           context: sf-intqa
           tag_prefix: "INTQA-"
           filters:
             branches:
               only: BRInt
-          when: << pipeline.parameters.forceapp_changed >>
-
       - deploy-staging:
+          when: << pipeline.parameters.forceapp_changed >>
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
           filters:
             branches:
               only: BRStaging
-          when: << pipeline.parameters.forceapp_changed >>
 
       - deploy-main:
+          when: << pipeline.parameters.forceapp_changed >>
           context: sf-prod
           tag_prefix: "PROD-"
           filters:
             branches:
               only: main
-          when: << pipeline.parameters.forceapp_changed >>
