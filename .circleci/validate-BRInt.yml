@@ -4,28 +4,19 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ----------------------------------------------------------
-# WORKFLOW — runs automatically because CircleCI trigger
-# is set to "PR opened" in the CircleCI UI.
-# ----------------------------------------------------------
 workflows:
   devint-validations:
     jobs:
       - DevInt-Validation
 
-# ----------------------------------------------------------
-# JOB: Validate Salesforce metadata
-# ----------------------------------------------------------
 jobs:
   DevInt-Validation:
     docker:
       - image: cimg/base:stable
 
     steps:
-      # Checkout PR source branch
       - checkout
 
-      # Install Node & SF CLI
       - node/install:
           node-version: "20"
 
@@ -35,15 +26,16 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-      # Decode JWT key
+      # ----------------------------------------------------------
+      # JWT AUTH
+      # ----------------------------------------------------------
       - run:
-          name: Decode JWT key for INTQA
+          name: Decode JWT key
           command: |
             echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
               || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
-      # Salesforce authentication
       - run:
           name: Authenticate to Salesforce INTQA
           command: |
@@ -55,19 +47,59 @@ jobs:
               --alias target \
               --set-default
 
-      # Perform dry-run validation (no deployment)
+      # ----------------------------------------------------------
+      # DELTA DIFF GENERATION
+      # ----------------------------------------------------------
       - run:
-          name: Validate Metadata (Dry Run)
+          name: Compute Delta (changed files only)
           command: |
-            cd bedrock-main/Bedrock
+            echo "🔍 Computing delta..."
+            
+            # Identify the PR target branch from CircleCI
+            TARGET_BRANCH="${CIRCLE_BRANCH}"
+            echo "Target branch: $TARGET_BRANCH"
+
+            # Fetch target branch
+            git fetch origin $TARGET_BRANCH
+
+            # Create a delta folder
+            mkdir -p delta
+
+            # Diff between PR HEAD and target branch
+            git diff --name-only origin/$TARGET_BRANCH...HEAD \
+              | grep "^force-app/" \
+              | while read file; do
+                  mkdir -p "delta/$(dirname "$file")"
+                  cp "$file" "delta/$file"
+                done
+
+            echo "Delta files:"
+            find delta -type f
+
+            # Fail if no delta
+            if [ -z "$(find delta -type f)" ]; then
+              echo "❌ No delta detected — failing validation."
+              exit 1
+            fi
+
+      # ----------------------------------------------------------
+      # DRY RUN VALIDATION WITH DELTA ONLY
+      # ----------------------------------------------------------
+      - run:
+          name: Validate Metadata (Dry Run — Delta Only)
+          command: |
+            echo "Running dry-run deploy on delta folder..."
+            cd delta
+
             sf project deploy start \
               --dry-run \
-              --test-level NoTestRun \
               --wait 360 \
               --target-org target \
-              -d force-app
+              --test-level NoTestRun
 
-      # Slack notifications
+      # ----------------------------------------------------------
+      # SLACK NOTIFICATIONS
+      # ----------------------------------------------------------
       - slack/notify:
           event: pass
           template: basic_success_1
