@@ -62,14 +62,16 @@ commands:
         type: string
     steps:
 
-      # Cancel existing deployments
+      # --------------------------------------------------------
+      # Cancel Existing Deploys
+      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
-            echo "🔍 Checking for active deployments by 'ravitej varada'"
+            echo "🔍 Checking for active deployments"
       
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
-            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
+            "SELECT Id, Status
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
              ORDER BY CreatedDate DESC" --json)
@@ -81,319 +83,42 @@ commands:
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
-              echo "⚠️ Deployments found — attempting cancel..."
+              echo "⚠️ Active deployments found — canceling..."
       
               for deployId in $DEPLOY_IDS; do
-                echo "⛔ Canceling deployment: $deployId"
-      
-                CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
-                echo "$CANCEL_OUTPUT"
-      
-                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
-                  echo "ℹ️ Deployment $deployId already completed — skipping."
-                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
-                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
-                else
-                  echo "✔️ Cancel command processed for $deployId"
-                fi
-      
+                echo "⛔ Canceling: $deployId"
+                sf project deploy cancel --job-id "$deployId" || true
               done
       
-              echo "✔️ Safe cancel complete — continuing pipeline."
+              echo "✔️ Cancel complete — continuing."
             fi
-      
-            true
 
-      # Tag discovery
+      # --------------------------------------------------------
+      # Identify Latest Tag
+      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
-            echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
 
             currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
-              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "🔍 No tags found — FIRST RUN"
+              echo "🔍 No tags — First run"
               currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
-
-      # Build manifest
-      - run:
-          name: Build Manifest
-          command: |
-            source $BASH_ENV
-            TAG_PREFIX="<< parameters.tag_prefix >>"
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
-            git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
-              | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' \
-              > files.txt || true
-
-            if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
-              mapfile -t manifest_paths < files.txt
-              sf project generate manifest -p "${manifest_paths[@]}"
-              echo "export CHANGES_FOUND=true" >> $BASH_ENV
-            else
-              echo "No delta — full deploy required"
-              echo "export CHANGES_FOUND=false" >> $BASH_ENV
-            fi
-
-      # Deploy
-      - run:
-          name: Deploy Metadata
-          command: |
-            source $BASH_ENV
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
-
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
-              DEPLOY_TYPE="DELTA"
-            else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                DEPLOY_TYPE="FULL_FIRST_RUN"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-                DEPLOY_TYPE="FULL_NO_TAG"
-              fi
-
-              sf project generate manifest --source-dir force-app > /dev/null
-            fi
-
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level NoTestRun \
-              --wait 360
-
-      # Create new tag
-      - run:
-          name: Create & Push Tag
-          command: |
-            source $BASH_ENV
-            TAG_PREFIX="<< parameters.tag_prefix >>"
-
-            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              cd "$PROJECT_DIR"
-
-              if [ "$FIRST_RUN" = "true" ]; then
-                newTag="${TAG_PREFIX}1"
-              else
-                newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
-              fi
-
-              git config user.email "circleci@example.com"
-              git config user.name "CircleCI"
-
-              git tag "$newTag"
-              git push origin "$newTag"
-              echo "✔️ Created tag: $newTag"
-            else
-              echo "No changes — skipping tag creation."
-            fi
-
-
-# ============================================================
-# JOBS PER ORG
-# ============================================================
-jobs:
-
-  # ---------------- INTQA ----------------
-  deploy-intqa:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: INTQA
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
-
-  # ---------------- STAGING ----------------
-  deploy-staging:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: STAGINGUAT
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
-
-  # ---------------- PROD ----------------
-  deploy-main:
-    parameters:
-      tag_prefix:
-        type: string
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
-
-# ============================================================ 
-# WORKFLOWS
-# ============================================================
-workflows:
-  version: 2
-
-  run-deploy-workflow:
-    when: << pipeline.parameters.run_deploy >>
-    jobs:
-
-      - deploy-intqa:
-          context: sf-intqa
-          tag_prefix: "INTQA-"
-          filters:
-            branches:
-              only: BRInt
-
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          filters:
-            branches:
-              only: BRStaging
-
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: "PROD-"
-          filters:
-            branches:
-              only: main
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
-      - run:
-          name: Cancel Existing Deploys (Safe Mode)
-          command: |
-            echo "🔍 Checking for active deployments by 'ravitej varada'"
-      
-            ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
-            "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
-             FROM DeployRequest 
-             WHERE Status IN ('Pending','PendingValidation','InProgress')
-             ORDER BY CreatedDate DESC" --json)
-      
-            echo "$ACTIVE_DEPLOYS" | jq .
-      
-            DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
-      
-            if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
-              echo "✅ No active deployments found."
-            else
-              echo "⚠️ Deployments found — attempting cancel..."
-      
-              for deployId in $DEPLOY_IDS; do
-                echo "⛔ Canceling deployment: $deployId"
-      
-                CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
-                echo "$CANCEL_OUTPUT"
-      
-                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
-                  echo "ℹ️ Deployment $deployId already completed — skipping."
-                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
-                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
-                else
-                  echo "✔️ Cancel command processed for $deployId"
-                fi
-      
-              done
-      
-              echo "✔️ Safe cancel complete — continuing pipeline."
-            fi
-      
-            true
-
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
-      - run:
-          name: Find Most Recent Tag
-          command: |
-            TAG_PREFIX="<< parameters.tag_prefix >>"
-            echo "Using Tag Prefix: $TAG_PREFIX"
-            git fetch --tags
-
-            currentRef=0
-            tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
-
-            if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
-              for tag in $tags; do
-                refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
-                if [ "$refNum" -gt "$currentRef" ]; then
-                  currentRef=$refNum
-                fi
-              done
-              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
-            else
-              echo "🔍 No tags found — FIRST RUN"
-              currentRef=0
-              echo "export FIRST_RUN=true" >> $BASH_ENV
-            fi
-
-            echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
-
 
       # --------------------------------------------------------
       # Build Delta Manifest
@@ -407,12 +132,8 @@ workflows:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
-              | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' \
-              > files.txt || true
+              | grep 'force-app/' || true > files.txt
 
             if [ -s files.txt ]; then
               echo "Changes detected:"
@@ -425,9 +146,8 @@ workflows:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-
       # --------------------------------------------------------
-      # Deploy (Delta or Full)
+      # Deploy
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
@@ -437,34 +157,23 @@ workflows:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
-
             if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
-              DEPLOY_TYPE="DELTA"
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level NoTestRun \
+                --wait 360
             else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                DEPLOY_TYPE="FULL_FIRST_RUN"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-                DEPLOY_TYPE="FULL_NO_TAG"
-              fi
-
               sf project generate manifest --source-dir force-app > /dev/null
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level NoTestRun \
+                --wait 360
             fi
 
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level NoTestRun \
-              --wait 360
-
-
       # --------------------------------------------------------
-      # Create New Tag
+      # Create Tag
       # --------------------------------------------------------
       - run:
           name: Create & Push Tag
@@ -494,11 +203,10 @@ workflows:
 
 
 # ============================================================
-# JOBS PER ORG
+# JOBS
 # ============================================================
 jobs:
 
-  # ---------------- INTQA ----------------
   deploy-intqa:
     parameters:
       tag_prefix:
@@ -512,20 +220,13 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-
-      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
 
-
-  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -539,20 +240,13 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-
-      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
 
-
-  # ---------------- PROD ----------------
   deploy-main:
     parameters:
       tag_prefix:
@@ -568,7 +262,6 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
 
 
-
 # ============================================================ 
 # WORKFLOWS
 # ============================================================
@@ -578,7 +271,6 @@ workflows:
   run-deploy-workflow:
     when: << pipeline.parameters.run_deploy >>
     jobs:
-
       - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
