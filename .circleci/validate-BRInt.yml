@@ -10,7 +10,7 @@ workflows:
       - validate-devint:
           filters:
             branches:
-              only: BRInt        # <- base branch must be BRInt
+              only: BRInt        # run only when PR target = BRInt
 
 jobs:
   validate-devint:
@@ -28,12 +28,11 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-
       - run:
           name: Decode JWT key for INTQA
           command: |
             echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
-              || echo "${JWT_KEY_INTQA >>}" > server.key
+              || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
       - run:
@@ -55,7 +54,7 @@ jobs:
               --dry-run \
               --test-level NoTestRun \
               --wait 360 \
-              --target-org targetOrg \
+              --target-org target \
               -d force-app
 
       - slack/notify:
