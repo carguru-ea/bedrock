@@ -11,7 +11,13 @@ orbs:
 workflows:
   devint-validations:
     jobs:
-      - DevInt-Validation
+      - DevInt-Validation:
+          filters:
+            branches:
+              only:
+                - BRInt
+
+
 
 # ----------------------------------------------------------
 # JOB: Validate Salesforce metadata
@@ -55,17 +61,57 @@ jobs:
               --alias target \
               --set-default
 
-      # Perform dry-run validation (no deployment)
+            # ----------------------------------------------------------
+      # Detect Delta Changes Between PR Branch and BRInt
+      # ----------------------------------------------------------
       - run:
-          name: Validate Metadata (Dry Run)
+          name: Fetch Target Branch
           command: |
-            cd bedrock-main/Bedrock
-            sf project deploy start \
-              --dry-run \
-              --test-level NoTestRun \
-              --wait 360 \
-              --target-org target \
-              -d force-app
+            git fetch origin BRInt:BRInt
+
+      - run:
+          name: Compute Delta Files
+          command: |
+            git diff --name-only BRInt...HEAD > delta.txt
+            echo "Changed files:"
+            cat delta.txt
+
+      - run:
+          name: Filter Metadata Files
+          command: |
+            grep -E '(\.cls$|\.trigger$|\.xml$|\.js$|\.html$|\.css$)' delta.txt > delta_meta.txt || true
+            echo "Delta metadata files:"
+            cat delta_meta.txt
+
+      - run:
+          name: Build Delta Deploy Folder
+          command: |
+            mkdir -p delta
+            if [ -s delta_meta.txt ]; then
+              xargs -I {} cp --parents "{}" delta/ < delta_meta.txt
+            else
+              echo "No metadata changes found — delta deploy not required."
+            fi
+
+      # ----------------------------------------------------------
+      # DRY RUN ON DELTA ONLY
+      # ----------------------------------------------------------
+      - run:
+          name: Validate Delta Metadata (Dry Run)
+          command: |
+             cd bedrock-main/Bedrock
+            if [ -d "../delta" ] && [ "$(ls -A ../delta)" ]; then
+              echo "Running delta dry-run validation..."
+              sf project deploy start \
+                --dry-run \
+                --test-level NoTestRun \
+                --wait 360 \
+                --target-org target \
+                -d ../delta
+            else
+              echo "No delta components — skipping validation."
+            fi
+
 
       # Slack notifications
       - slack/notify:
@@ -75,3 +121,5 @@ jobs:
       - slack/notify:
           event: fail
           template: basic_fail_1
+           
+             
