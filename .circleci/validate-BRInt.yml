@@ -5,8 +5,7 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ----------------------------------------------------------
-# WORKFLOW — Runs ONLY when a PR targets BRInt
-# (Push events are ignored completely)
+# WORKFLOW — Runs ONLY for PR → BRInt
 # ----------------------------------------------------------
 workflows:
   devint-validations:
@@ -14,10 +13,10 @@ workflows:
       - DevInt-Validation:
           filters:
             branches:
-              ignore: /.*/      # don't run on pushes
+              ignore: /.*/
             pull-requests:
               only:
-                - BRInt        # run ONLY when PR target = BRInt
+                - BRInt
 
 # ----------------------------------------------------------
 # JOB: Salesforce Delta Validation on PR
@@ -30,9 +29,6 @@ jobs:
     steps:
       - checkout
 
-      # ----------------------------------------------
-      # Install Node + Salesforce CLI
-      # ----------------------------------------------
       - node/install:
           node-version: "20"
 
@@ -42,9 +38,6 @@ jobs:
             npm install -g @salesforce/cli
             sf --version
 
-      # ----------------------------------------------
-      # JWT Authentication
-      # ----------------------------------------------
       - run:
           name: Decode JWT key for INTQA
           command: |
@@ -63,9 +56,9 @@ jobs:
               --alias target \
               --set-default
 
-      # ----------------------------------------------
-      # Fetch BRInt so we can detect PR delta
-      # ----------------------------------------------
+      # ----------------------------------------------------------
+      # Detect Delta Changes Between PR Branch and BRInt
+      # ----------------------------------------------------------
       - run:
           name: Fetch BRInt branch
           command: |
@@ -95,9 +88,9 @@ jobs:
               echo "No metadata changes found — skipping delta build."
             fi
 
-      # ----------------------------------------------
-      # DRY RUN VALIDATION
-      # ----------------------------------------------
+      # ----------------------------------------------------------
+      # Dry Run Validation
+      # ----------------------------------------------------------
       - run:
           name: Validate Delta (Dry Run)
           command: |
@@ -114,9 +107,9 @@ jobs:
               echo "No delta components — skipping validation."
             fi
 
-      # ----------------------------------------------
+      # ----------------------------------------------------------
       # Slack Notifications
-      # ----------------------------------------------
+      # ----------------------------------------------------------
       - slack/notify:
           event: pass
           template: basic_success_1
