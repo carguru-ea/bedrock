@@ -9,7 +9,9 @@ orbs:
 # is set to "PR opened" in the CircleCI UI.
 # ----------------------------------------------------------
 workflows:
-  devint-validations:
+  validation-pr-open:
+    # Only run this workflow when a PR is opened
+    when: pipeline.event.name == "pull_request" and pipeline.event.action == "opened"
     jobs:
       - DevInt-Validation
 
