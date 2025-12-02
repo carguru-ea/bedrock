@@ -11,10 +11,10 @@ orbs:
 workflows:
   validation-pr-open:
     # Only run this workflow when a PR is opened
-    when: pipeline.event.name == "pull_request" and (
-            pipeline.event.action == "opened" or
-            pipeline.event.action == "synchronize"
-          )
+    when: >
+      pipeline.event.name == "pull_request" and
+      pipeline.event.github.pull_request.base.ref == "BRInt"
+      
     jobs:
       - INTQA-Validation
 
