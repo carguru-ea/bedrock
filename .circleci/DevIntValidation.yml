@@ -1,0 +1,77 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.0.2
+  slack: circleci/slack@4.12.5
+
+# ----------------------------------------------------------
+# WORKFLOW -- runs automatically because CircleCI trigger 
+# is set to "PR opened" in the CircleCI UI.
+# ----------------------------------------------------------
+workflows:
+  devint-validations:
+    jobs:
+      - DevInt-Validation
+
+# ----------------------------------------------------------
+# JOB: Validate Salesforce metadata
+# ----------------------------------------------------------
+jobs:
+  DevInt-Validation:
+    docker:
+      - image: cimg/base:stable
+
+    steps:
+      # Checkout PR source branch
+      - checkout
+
+      # Install Node & SF CLI
+      - node/install:
+          node-version: "20"
+
+      - run:
+          name: Install Salesforce CLI
+          command: |
+            npm install -g @salesforce/cli
+            sf --version
+
+      # Decode JWT key
+      - run:
+          name: Decode JWT key for DEVINT
+          command: |
+            echo "${JWT_KEY_DEVINT}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_DEVINT}" > server.key
+            chmod 600 server.key
+
+      # Salesforce authentication
+      - run:
+          name: Authenticate to Salesforce DEVINT
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_DEVINT}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_DEVINT}" \
+              --instance-url "${SF_INSTANCEURL_DEVINT}" \
+              --alias target \
+              --set-default
+
+      # Perform dry-run validation (no deployment)
+      - run:
+          name: Validate Metadata (Dry Run)
+          command: |
+            cd Bedrock
+            sf project deploy start \
+              --dry-run \
+              --test-level NoTestRun \
+              --wait 360 \
+              --target-org target \
+              -d force-app
+
+      # Slack notifications
+      - slack/notify:
+          event: pass
+          template: basic_success_1
+
+      - slack/notify:
+          event: fail
+          template: basic_fail_1
