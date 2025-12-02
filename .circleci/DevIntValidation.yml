@@ -13,13 +13,13 @@ workflows:
     # Only run this workflow when a PR is opened
     when: pipeline.event.name == "pull_request" and pipeline.event.action == "opened"
     jobs:
-      - DevInt-Validation
+      - INTQA-Validation
 
 # ----------------------------------------------------------
 # JOB: Validate Salesforce metadata
 # ----------------------------------------------------------
 jobs:
-  DevInt-Validation:
+  INTQA-Validation:
     docker:
       - image: cimg/base:stable
 
@@ -39,21 +39,21 @@ jobs:
 
       # Decode JWT key
       - run:
-          name: Decode JWT key for DEVINT
+          name: Decode JWT key for INTQA
           command: |
-            echo "${JWT_KEY_DEVINT}" | base64 -d > server.key 2>/dev/null \
-              || echo "${JWT_KEY_DEVINT}" > server.key
+            echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_INTQA}" > server.key
             chmod 600 server.key
 
       # Salesforce authentication
       - run:
-          name: Authenticate to Salesforce DEVINT
+          name: Authenticate to Salesforce INTQA
           command: |
             sf org login jwt \
-              --username "${SF_USERNAME_DEVINT}" \
+              --username "${SF_USERNAME_INTQA}" \
               --jwt-key-file server.key \
-              --client-id "${SF_CONSUMER_KEY_DEVINT}" \
-              --instance-url "${SF_INSTANCEURL_DEVINT}" \
+              --client-id "${SF_CONSUMER_KEY_INTQA}" \
+              --instance-url "${SF_INSTANCEURL_INTQA}" \
               --alias target \
               --set-default
 
