@@ -4,7 +4,7 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ---------------------------------------------------------- 
+# ----------------------------------------------------------  
 # WORKFLOW -- runs automatically because CircleCI trigger 
 # is set to "PR opened" in the CircleCI UI.
 # ----------------------------------------------------------
