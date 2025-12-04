@@ -3,9 +3,8 @@ version: 2.1
 orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
-  path-filtering: circleci/path-filtering@3.0.0
 
-# ============================================================    
+# ============================================================     
 # COMMANDS
 # ============================================================
 commands:
@@ -64,12 +63,13 @@ commands:
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
-            echo "🔍 Checking for active deployments by 'ravitej varada'"
+            echo "🔍 Checking for active deployments by 'CircleCI User'"
       
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
+             AND CreatedBy.Name = 'CircleCI API'
              ORDER BY CreatedDate DESC" --json)
       
             echo "$ACTIVE_DEPLOYS" | jq .
@@ -199,7 +199,7 @@ commands:
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level NoTestRun \
+              --test-level RunLocalTests \
               --wait 360
 
 
@@ -222,7 +222,7 @@ commands:
                 newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
               fi
 
-              git config user.email "circleci@example.com"
+              git config user.email "circleci@cargurus.com"
               git config user.name "CircleCI"
 
               git tag "$newTag"
@@ -239,7 +239,7 @@ commands:
 jobs:
 
   # ---------------- INTQA ----------------
-  deploy-intqa:
+  build-deploy-intqa:
     parameters:
       tag_prefix:
         type: string
@@ -315,19 +315,11 @@ jobs:
 # ============================================================
 workflows:
   version: 2
-  filter-on-changes:
-      jobs:
-        - path-filtering/filter:
-            base-revision: main
-            # continuation config that will run your deploy jobs
-            config-path: .circleci/continue_config.yml
-            # if any file under force-app/ changes, set run-salesforce-deploys=true
-            mapping: |
-              force-app/.* run-salesforce-deploys true
 
   build-test-deploy:
     jobs:
-      - deploy-intqa:
+
+      - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
           filters:
@@ -340,10 +332,3 @@ workflows:
           filters:
             branches:
               only: BRStaging
-
-      - deploy-main:
-          context: sf-prod
-          tag_prefix: "PROD-"
-          filters:
-            branches:
-              only: main
