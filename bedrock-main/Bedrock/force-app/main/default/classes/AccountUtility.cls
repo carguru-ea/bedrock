@@ -5,7 +5,7 @@ public class AccountUtility {
     
     /**
      * @description Get account by IDdd
-     * @param accountId The account ID
+     * @param accountId The account IDs
      * @return Account record
      */
     public static Account getAccountById(Id accountId) {
