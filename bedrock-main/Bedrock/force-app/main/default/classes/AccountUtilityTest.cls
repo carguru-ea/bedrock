@@ -1,5 +1,5 @@
 /**
- * @description Test class for AccountUtility
+ * @description Test class for AccountUtilityd
  */
 @IsTest
 public class AccountUtilityTest {
