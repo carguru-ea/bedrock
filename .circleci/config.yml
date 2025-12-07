@@ -348,7 +348,7 @@ workflows:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
-          run_tests: << workflow.parameters.run_tests >>
+          run_tests: << pipeline.parameters.run_tests >>
           filters:
             branches:
               only: BRInt
@@ -356,7 +356,7 @@ workflows:
       - deploy-staging:
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
-          run_tests: << workflow.parameters.run_tests >>
+          run_tests: << pipeline.parameters.run_tests >>
           filters:
             branches:
               only: BRStaging
