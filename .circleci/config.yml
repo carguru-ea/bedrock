@@ -277,7 +277,6 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          run_tests: << parameters.run_tests >>
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -302,7 +301,7 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: PROD
-      # PROD always runs tests → run_tests = true
+
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
@@ -322,11 +321,6 @@ workflows:
   version: 2
 
   build-test-deploy:
-    parameters:
-      run_tests:
-        type: boolean
-        default: true
-
     jobs:
 
       - build-deploy-intqa:
