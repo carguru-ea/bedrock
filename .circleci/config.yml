@@ -294,8 +294,6 @@ jobs:
     parameters:
       tag_prefix:
         type: string
-      run_tests:
-        type: boolean
     docker:
       - image: cimg/node:20.10
     steps:
@@ -306,7 +304,6 @@ jobs:
 
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          run_tests: << parameters.run_tests >>
 
       - slack/notify:
           event: fail
@@ -329,7 +326,6 @@ workflows:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
-          run_tests: true
           filters:
             branches:
               only: BRInt
