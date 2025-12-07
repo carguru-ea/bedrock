@@ -55,9 +55,6 @@ commands:
     parameters:
       tag_prefix:
         type: string
-      run_tests:
-        type: boolean
-        default: true
     steps:
 
       # --------------------------------------------------------
@@ -197,18 +194,12 @@ commands:
 
             echo "🚀 Running $DEPLOY_TYPE deployment..."
 
-            if [ "<< parameters.run_tests >>" = "true" ]; then
-              echo "🧪 Running tests (RunLocalTests)"
-              TEST_LEVEL="RunLocalTests"
-            else
-              echo "⚡ Skipping tests (NoTestRun)"
-              TEST_LEVEL="NoTestRun"
-            fi
+ 
             
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level "$TEST_LEVEL" \
+              --test-level RunLocalTests \
               --wait 360
 
       # --------------------------------------------------------
