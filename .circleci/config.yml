@@ -196,10 +196,19 @@ commands:
             fi
 
             echo "🚀 Running $DEPLOY_TYPE deployment..."
+            
+            if [ "<< parameters.run_tests >>" = "true" ]; then
+              echo "🧪 Running tests (RunLocalTests)"
+              TEST_LEVEL="RunLocalTests"
+            else
+              echo "⚡ Skipping tests (NoTestRun)"
+              TEST_LEVEL="NoTestRun"
+            fi
+            
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
+              --test-level "$TEST_LEVEL" \
               --wait 360
 
 
@@ -252,7 +261,8 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-
+          run_tests: << parameters.run_tests >>
+          
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
@@ -279,6 +289,7 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          run_tests: << parameters.run_tests >>
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -307,7 +318,16 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
 
+ # ----- SLACK NOTIFICATIONS -----
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
 
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
 
 
 # ============================================================ 
@@ -325,6 +345,9 @@ workflows:
           filters:
             branches:
               only: BRInt
+          run_tests:
+            type: boolean
+            default: true
 
       - deploy-staging:
           context: sf-staging
@@ -332,3 +355,6 @@ workflows:
           filters:
             branches:
               only: BRStaging
+          run_tests:
+            type: boolean
+            default: true
