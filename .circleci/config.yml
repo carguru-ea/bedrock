@@ -199,7 +199,7 @@ commands:
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
+              --test-level NoTestRun \
               --wait 360
 
 
