@@ -329,7 +329,7 @@ workflows:
   build-test-deploy:
     jobs:
 
-      - build-deploy-intqa:
+      - deploy-intqa:
           context: sf-intqa
           tag_prefix: "INTQA-"
           filters:
