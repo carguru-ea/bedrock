@@ -1,5 +1,5 @@
 /**
- * @description Utility class for nnd
+ * @description Utility class for nndd
  */
 public class AccountUtility {
     
