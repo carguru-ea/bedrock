@@ -239,7 +239,7 @@ commands:
 jobs:
 
   # ---------------- INTQA ----------------
-  build-deploy-intqa:
+  deploy-intqa:
     parameters:
       tag_prefix:
         type: string
