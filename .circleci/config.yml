@@ -336,3 +336,11 @@ workflows:
               only: BRStaging
             tags:
               ignore: /.*/ 
+      - deploy-main:
+          context: sf-main
+          tag_prefix: "MAIN-"
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/ 
