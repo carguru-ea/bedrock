@@ -318,7 +318,6 @@ workflows:
 
   build-test-deploy:
     when: >
-        pipeline.trigger_source == "scheduled_pipeline" and
         pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6"
     jobs:
       - build-deploy-intqa:
