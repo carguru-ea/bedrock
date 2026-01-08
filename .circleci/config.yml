@@ -40,6 +40,8 @@ commands:
             echo "trigger_source=<< pipeline.trigger_source >>"
             echo "pipeline_id=<< pipeline.id >>"
             echo "pipeline_number=<< pipeline.number >>"
+            echo "pipeline_tag=<< pipeline.git.tag >>"
+            
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
