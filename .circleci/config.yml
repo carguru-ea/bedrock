@@ -36,7 +36,8 @@ commands:
             echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
               || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
-
+            echo "<< parameters.target_env >>"
+            echo  "pipeline.trigger_source"
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
