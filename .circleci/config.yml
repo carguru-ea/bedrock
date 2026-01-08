@@ -323,7 +323,7 @@ workflows:
 
   build-test-deploy:
     when: >
-        pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6" and pipeline.git.tag != ""
+        pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6" and pipeline.git.tag == null
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
