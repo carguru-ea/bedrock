@@ -329,12 +329,10 @@ workflows:
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
-          tag_prefix: "INTQA-"
+          tag_prefix: "CCS2202-"
           filters:
             branches:
-              only: BRInt
-            tags:
-              ignore: /.*/ 
+              only: Feature/CSS-2202-v1
 
       - deploy-staging:
           context: sf-staging
