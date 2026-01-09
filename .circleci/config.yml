@@ -4,6 +4,10 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
+parameters:
+  run_manual_main_deploy:
+    type: boolean
+    default: true
 # ============================================================ s    
 # COMMANDS
 # ============================================================
