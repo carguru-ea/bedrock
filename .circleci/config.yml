@@ -4,7 +4,11 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ============================================================   
+parameters:
+  run_manual_main_deploy:
+    type: boolean
+    default: true
+# ============================================================ s    
 # COMMANDS
 # ============================================================
 commands:
@@ -36,7 +40,12 @@ commands:
             echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
               || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
-
+            echo "target_env=<< parameters.target_env >>"
+            echo "trigger_source=<< pipeline.trigger_source >>"
+            echo "pipeline_id=<< pipeline.id >>"
+            echo "pipeline_number=<< pipeline.number >>"
+            echo "pipeline_tag=<< pipeline.git.tag >>"
+            
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
@@ -63,12 +72,13 @@ commands:
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
-            echo "🔍 Checking for active deployments by 'ravitej varada'"
+            echo "🔍 Checking for active deployments by 'CircleCI User'"
       
             ACTIVE_DEPLOYS=$(sf data query --use-tooling-api --query \
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest 
              WHERE Status IN ('Pending','PendingValidation','InProgress')
+             AND CreatedBy.Name = 'CircleCI API'
              ORDER BY CreatedDate DESC" --json)
       
             echo "$ACTIVE_DEPLOYS" | jq .
@@ -221,7 +231,7 @@ commands:
                 newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
               fi
 
-              git config user.email "circleci@example.com"
+              git config user.email "circleci@cargurus.com"
               git config user.name "CircleCI"
 
               git tag "$newTag"
@@ -238,7 +248,7 @@ commands:
 jobs:
 
   # ---------------- INTQA ----------------
-  deploy-intqa:
+  build-deploy-intqa:
     parameters:
       tag_prefix:
         type: string
@@ -317,8 +327,7 @@ workflows:
 
   build-test-deploy:
     jobs:
-
-      - deploy-intqa:
+      - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "CCS2202-"
           filters:
@@ -331,10 +340,15 @@ workflows:
           filters:
             branches:
               only: BRStaging
-
+            tags:
+              ignore: /.*/ 
+  
+  build-test-deploy-manual:
+    when: << pipeline.parameters.run_manual_main_deploy >>
+    jobs:
       - deploy-main:
-          context: sf-prod
-          tag_prefix: "PROD-"
+          context: sf-main
+          tag_prefix: "MAIN-"
           filters:
             branches:
               only: main

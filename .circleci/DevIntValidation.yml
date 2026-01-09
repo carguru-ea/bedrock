@@ -1,0 +1,131 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.0.2
+  slack: circleci/slack@4.12.5
+
+# ===================================================================
+# WORKFLOW — Runs ONLY when a PR is opened targeting BRInt
+# ===================================================================
+workflows:
+  devint-validations:
+    jobs:
+      - DevInt-Validation:
+          filters:
+            branches:
+              ignore: /.*/        # Ignore ALL branch pushes
+            pull-requests:
+              only:
+                - BRInt          # Run ONLY when PR target = BRInt
+
+# ===================================================================
+# JOB: Validate Salesforce metadata
+# ===================================================================
+jobs:
+  DevInt-Validation:
+    docker:
+      - image: cimg/base:stable
+
+    steps:
+      # --------------------------------------------------------------
+      # Checkout PR Source Branch
+      # --------------------------------------------------------------
+      - checkout
+
+      # --------------------------------------------------------------
+      # Install Node & Salesforce CLI
+      # --------------------------------------------------------------
+      - node/install:
+          node-version: "20"
+
+      - run:
+          name: Install Salesforce CLI
+          command: |
+            npm install -g @salesforce/cli
+            sf --version
+
+      # --------------------------------------------------------------
+      # Decode JWT Key for INTQA
+      # --------------------------------------------------------------
+      - run:
+          name: Decode JWT key for INTQA
+          command: |
+            echo "${JWT_KEY_INTQA}" | base64 -d > server.key 2>/dev/null \
+              || echo "${JWT_KEY_INTQA}" > server.key
+            chmod 600 server.key
+
+      # --------------------------------------------------------------
+      # Salesforce Authentication
+      # --------------------------------------------------------------
+      - run:
+          name: Authenticate to Salesforce INTQA
+          command: |
+            sf org login jwt \
+              --username "${SF_USERNAME_INTQA}" \
+              --jwt-key-file server.key \
+              --client-id "${SF_CONSUMER_KEY_INTQA}" \
+              --instance-url "${SF_INSTANCEURL_INTQA}" \
+              --alias target \
+              --set-default
+
+      # --------------------------------------------------------------
+      # Detect Delta Changes Between PR Branch and BRInt
+      # --------------------------------------------------------------
+      - run:
+          name: Fetch Target Branch
+          command: |
+            git fetch origin BRInt:BRInt
+
+      - run:
+          name: Compute Delta Files
+          command: |
+            git diff --name-only BRInt...HEAD > delta.txt
+            echo "Changed files:"
+            cat delta.txt
+
+      - run:
+          name: Filter Metadata Files
+          command: |
+            grep -E '(\.cls$|\.trigger$|\.xml$|\.js$|\.html$|\.css$)' delta.txt > delta_meta.txt || true
+            echo "Delta metadata files:"
+            cat delta_meta.txt
+
+      - run:
+          name: Build Delta Deploy Folder
+          command: |
+            mkdir -p delta
+            if [ -s delta_meta.txt ]; then
+              xargs -I {} cp --parents "{}" delta/ < delta_meta.txt
+            else
+              echo "No metadata changes found — delta deploy not required."
+            fi
+
+      # --------------------------------------------------------------
+      # DRY RUN ON DELTA ONLY
+      # --------------------------------------------------------------
+      - run:
+          name: Validate Delta Metadata (Dry Run)
+          command: |
+            cd bedrock-main/Bedrock
+            if [ -d "../delta" ] && [ "$(ls -A ../delta)" ]; then
+              echo "Running delta dry-run validation..."
+              sf project deploy start \
+                --dry-run \
+                --test-level NoTestRun \
+                --wait 360 \
+                --target-org target \
+                -d ../delta
+            else
+              echo "No delta components — skipping validation."
+            fi
+
+      # --------------------------------------------------------------
+      # Slack Notifications
+      # --------------------------------------------------------------
+      - slack/notify:
+          event: pass
+          template: basic_success_1
+
+      - slack/notify:
+          event: fail
+          template: basic_fail_1

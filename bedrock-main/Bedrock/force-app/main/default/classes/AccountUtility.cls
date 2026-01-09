@@ -1,5 +1,5 @@
 /**
- * @description Utility class for Account operatis dssdddjjj
+ * @description Utility class for nnddddJcf
  */
 public class AccountUtility {
     
@@ -14,7 +14,7 @@ public class AccountUtility {
     
     /**
      * @description Get all accounts with specified industry
-     * @param industry The industry filter
+     * @param industry The industry filterddd
      * @return List of accounts
      */
     public static List<Account> getAccountsByIndustry(String industry) {

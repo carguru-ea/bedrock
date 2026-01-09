@@ -1,5 +1,5 @@
 /**
- * @description Lead handler for lead management
+ * @description Lead handler for lead managementss
  */
 public class LeadHandler {
     
