@@ -322,9 +322,6 @@ workflows:
   version: 2
 
   build-test-deploy:
-    when: >
-      pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6" and
-      pipeline.trigger_source == "webhook"
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
@@ -343,11 +340,13 @@ workflows:
               only: BRStaging
             tags:
               ignore: /.*/ 
+  
+  build-test-deploy-manual:
+    when: << pipeline.parameters.run_manual_main_deploy >>
+    jobs:
       - deploy-main:
           context: sf-main
           tag_prefix: "MAIN-"
           filters:
             branches:
               only: main
-            tags:
-              ignore: /.*/ 
