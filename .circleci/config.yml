@@ -251,11 +251,13 @@ commands:
 # ============================================================
 jobs:
 
-  # ---------------- INTQA ----------------
   build-deploy-intqa:
     parameters:
       tag_prefix:
         type: string
+      create_tags:
+        type: boolean
+        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -266,25 +268,22 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
-
-
-      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-
-  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
         type: string
+      create_tags:
+        type: boolean
+        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -295,25 +294,22 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
-
-
-      # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-
-  # ---------------- PROD ----------------
   deploy-main:
     parameters:
       tag_prefix:
         type: string
+      create_tags:
+        type: boolean
+        default: false
     docker:
       - image: cimg/node:20.10
     steps:
@@ -324,11 +320,10 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
-          
 
-# ============================================================ 
+# ============================================================
 # WORKFLOWS
-# ============================================================ 
+# ============================================================
 workflows:
   version: 2
 
@@ -342,6 +337,8 @@ workflows:
           filters:
             branches:
               only: BRInt
+            tags:
+              ignore: /.*/
 
       - deploy-staging:
           context: sf-staging
@@ -350,10 +347,11 @@ workflows:
           filters:
             branches:
               only: BRStaging
-
+            tags:
+              ignore: /.*/
 
   manual-main-deploy:
-    when: << pipeline.parameters.auto_deploy >>  == false
+    when: << pipeline.parameters.auto_deploy >>
     jobs:
       - deploy-main:
           context: sf-main
