@@ -342,7 +342,7 @@ workflows:
     jobs:
       - deploy-main:
           context: sf-main
-          tag_prefix: "PROD"
+          tag_prefix: "PROD-"
           filters:
             branches:
               only: main
