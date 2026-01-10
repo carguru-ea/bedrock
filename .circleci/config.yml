@@ -326,6 +326,7 @@ workflows:
   version: 2
 
   build-test-deploy:
+    when: << pipeline.parameters.run_auto_main_deploy >> == true
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
