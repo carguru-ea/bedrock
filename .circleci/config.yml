@@ -217,7 +217,12 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] || [ "$TAG_PREFIX" != "MAIN-" ]; then
+            if [ "<< parameters.create_tags >>" != "true" ]; then
+              echo "🚫 Tagging disabled for this job — skipping tag creation."
+              exit 0
+            fi
+
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] ; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
@@ -257,6 +262,9 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          create_tags:
+            type: boolean
+            default: true
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -284,6 +292,9 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          create_tags:
+            type: boolean
+            default: true
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -311,6 +322,9 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          create_tags:
+            type: boolean
+            default: true
 
 
 # ============================================================ 
@@ -325,6 +339,7 @@ workflows:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
+          create_tags: true
           filters:
             branches:
               only: BRInt
@@ -332,6 +347,7 @@ workflows:
       - deploy-staging:
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
+          create_tags: true
           filters:
             branches:
               only: BRStaging
@@ -343,6 +359,7 @@ workflows:
       - deploy-main:
           context: sf-main
           tag_prefix: "MAIN-"
+          create_tags: false
           filters:
             branches:
               only: main
