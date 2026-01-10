@@ -7,7 +7,7 @@ orbs:
 parameters:
   run_auto_main_deploy:
     type: boolean
-    default: true
+    default: false
 # ============================================================ s    
 # COMMANDS
 # ============================================================
