@@ -8,6 +8,9 @@ parameters:
   auto_deploy:
     type: boolean
     default: false
+  validation_only:
+    type: boolean
+    default: false
 
 # ============================================================
 # COMMANDS
@@ -174,37 +177,45 @@ commands:
       # Deploy (Delta or Full)
       # --------------------------------------------------------
       - run:
-          name: Deploy Metadata
+          name: Deploy or Validate Metadata
           command: |
             source $BASH_ENV
-
+      
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
-
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
-              DEPLOY_TYPE="DELTA"
-            else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                DEPLOY_TYPE="FULL_FIRST_RUN"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-                DEPLOY_TYPE="FULL_NO_TAG"
-              fi
-
+      
+            echo "VALIDATION_ONLY=<< parameters.validation_only >>"
+      
+            # If no delta found, generate full manifest
+            if [ "$CHANGES_FOUND" != "true" ]; then
               sf project generate manifest --source-dir force-app > /dev/null
             fi
-
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
+      
+            # ------------------------------
+            # VALIDATION ONLY (NO DEPLOY)
+            # ------------------------------
+            if [ "<< parameters.validation_only >>" = "true" ]; then
+              echo "🧪 VALIDATION ONLY → RunLocalTests"
+              sf project deploy validate \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+      
+              echo "✅ Validation complete — no deploy executed."
+              exit 0
+            fi
+      
+            # ------------------------------
+            # REAL DEPLOY
+            # ------------------------------
+            echo "🚀 Running DEPLOY..."
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
+
 
       # --------------------------------------------------------
       # Create New Tag (controlled by create_tags)
@@ -252,6 +263,9 @@ jobs:
       create_tags:
         type: boolean
         default: true
+      validation_only:
+        type: boolean
+        default: false
     docker:
       - image: cimg/node:20.10
     steps:
@@ -278,6 +292,9 @@ jobs:
       create_tags:
         type: boolean
         default: true
+      validation_only:
+        type: boolean
+        default: false
     docker:
       - image: cimg/node:20.10
     steps:
@@ -302,6 +319,9 @@ jobs:
       tag_prefix:
         type: string
       create_tags:
+        type: boolean
+        default: false
+      validation_only:
         type: boolean
         default: false
     docker:
@@ -356,3 +376,18 @@ workflows:
               only: main
             tags:
               ignore: /.*/
+
+  validation-only:
+    when: << pipeline.parameters.validation_only >>
+    jobs:
+      - build-deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          create_tags: false
+          validation_only: true
+          filters:
+            branches:
+              only: BRInt
+            tags:
+              ignore: /.*/
+
