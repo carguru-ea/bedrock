@@ -310,7 +310,7 @@ jobs:
       - jwt-auth:
           target_env: PROD
       - deploy-with-tags:
-          tag_prefix: << parameters.tag_prefix >>
+          tag_prefix: 
 
 
 
