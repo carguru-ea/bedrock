@@ -340,13 +340,13 @@ workflows:
 
 
   manual-main-deploy:
-      when: << pipeline.parameters.run_auto_main_deploy >>
-      jobs:
-        - deploy-main:
-            context: sf-main
-            tag_prefix: ""
-            filters:
-              branches:
-                only: main
-              tags:
-                ignore: /.*/
+    when: << pipeline.parameters.run_auto_main_deploy >>
+    jobs:
+      - deploy-main:
+          context: sf-main
+          tag_prefix: ""
+          filters:
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
