@@ -217,7 +217,7 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] || [ "$TAG_PREFIX" != "PROD" ]; then
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] || [ "$TAG_PREFIX" != "MAIN" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
