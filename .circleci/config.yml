@@ -8,6 +8,9 @@ parameters:
   auto_deploy:
     type: boolean
     default: false
+  create_tags:
+    type: boolean
+    default: true
     
 # ============================================================     
 # COMMANDS
@@ -262,9 +265,8 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags:
-            type: boolean
-            default: true
+          create_tags: << parameters.create_tags >>
+
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -292,9 +294,8 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags:
-            type: boolean
-            default: true
+          create_tags: << parameters.create_tags >>
+
 
       # ----- SLACK NOTIFICATIONS -----
       - slack/notify:
@@ -322,10 +323,8 @@ jobs:
           target_env: PROD
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags:
-            type: boolean
-            default: true
-
+          create_tags: << parameters.create_tags >>
+          
 
 # ============================================================ 
 # WORKFLOWS
