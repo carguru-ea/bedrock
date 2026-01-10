@@ -365,7 +365,7 @@ workflows:
     when:
       and:
         - << pipeline.parameters.auto_deploy >> == false
-        - << pipeline.parameters.validation_only >> 
+        - << pipeline.parameters.validation_only >>  == false
     jobs:
       - deploy-main:
           context: sf-main
