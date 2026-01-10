@@ -5,9 +5,9 @@ orbs:
   slack: circleci/slack@4.12.5
 
 parameters:
-  run_manual_main_deploy:
+  run_auto_main_deploy:
     type: boolean
-    default: false
+    default: true
 # ============================================================ s    
 # COMMANDS
 # ============================================================
@@ -344,7 +344,7 @@ workflows:
               ignore: /.*/ 
   
   build-test-deploy-manual:
-    when: << pipeline.parameters.run_manual_main_deploy >>
+    when: << pipeline.parameters.run_auto_main_deploy >>
     jobs:
       - deploy-main:
           context: sf-main
