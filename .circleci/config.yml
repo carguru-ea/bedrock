@@ -8,6 +8,7 @@ parameters:
   auto_deploy:
     type: boolean
     default: false
+
   validation_only:
     type: boolean
     default: false
@@ -17,9 +18,6 @@ parameters:
 # ============================================================
 commands:
 
-  # ----------------------------------------------------------
-  # Install Tooling
-  # ----------------------------------------------------------
   install-tooling:
     steps:
       - node/install:
@@ -30,9 +28,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -56,9 +51,6 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
-  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
@@ -66,11 +58,11 @@ commands:
       create_tags:
         type: boolean
         default: true
+      validation_only:
+        type: boolean
+        default: false
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -112,9 +104,6 @@ commands:
 
             true
 
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -143,9 +132,6 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -173,39 +159,38 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy (Delta or Full)
-      # --------------------------------------------------------
       - run:
           name: Deploy or Validate Metadata
           command: |
             source $BASH_ENV
-      
+
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-      
+
             echo "VALIDATION_ONLY=<< parameters.validation_only >>"
-      
-            # If no delta found, generate full manifest
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+
+            # If no delta found, generate full manifest (keeps behavior consistent)
             if [ "$CHANGES_FOUND" != "true" ]; then
               sf project generate manifest --source-dir force-app > /dev/null
             fi
-      
+
             # ------------------------------
             # VALIDATION ONLY (NO DEPLOY)
             # ------------------------------
             if [ "<< parameters.validation_only >>" = "true" ]; then
-              echo "🧪 VALIDATION ONLY → RunLocalTests"
+              echo "🧪 VALIDATION ONLY → sf project deploy validate (RunLocalTests)"
               sf project deploy validate \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunLocalTests \
                 --wait 360
-      
+
               echo "✅ Validation complete — no deploy executed."
               exit 0
             fi
-      
+
             # ------------------------------
             # REAL DEPLOY
             # ------------------------------
@@ -216,15 +201,17 @@ commands:
               --test-level RunLocalTests \
               --wait 360
 
-
-      # --------------------------------------------------------
-      # Create New Tag (controlled by create_tags)
-      # --------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
+
+            # Never tag for validation-only runs
+            if [ "<< parameters.validation_only >>" = "true" ]; then
+              echo "🚫 Validation-only run — skipping tag creation."
+              exit 0
+            fi
 
             if [ "<< parameters.create_tags >>" != "true" ]; then
               echo "🚫 Tagging disabled for this job — skipping tag creation."
@@ -276,6 +263,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
+          validation_only: << parameters.validation_only >>
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -305,6 +293,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
+          validation_only: << parameters.validation_only >>
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -334,6 +323,7 @@ jobs:
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
           create_tags: << parameters.create_tags >>
+          validation_only: << parameters.validation_only >>
 
 # ============================================================
 # WORKFLOWS
@@ -341,13 +331,18 @@ jobs:
 workflows:
   version: 2
 
+  # Auto deploy (delta) for BRInt + BRStaging when not manual and not validation-only
   build-test-deploy:
-    when: << pipeline.parameters.auto_deploy >> == false
+    when:
+      and:
+        - << pipeline.parameters.auto_deploy >> == false
+        - << pipeline.parameters.validation_only >> == false
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
           create_tags: true
+          validation_only: false
           filters:
             branches:
               only: BRInt
@@ -358,25 +353,32 @@ workflows:
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
           create_tags: true
+          validation_only: false
           filters:
             branches:
               only: BRStaging
             tags:
               ignore: /.*/
 
+  # Manual main deploy only when auto_deploy=true (and not validation-only)
   manual-main-deploy:
-    when: << pipeline.parameters.auto_deploy >> == false
+    when:
+      and:
+        - << pipeline.parameters.auto_deploy >>
+        - << pipeline.parameters.validation_only >> == false
     jobs:
       - deploy-main:
           context: sf-main
           tag_prefix: "MAIN-"
           create_tags: false
+          validation_only: false
           filters:
             branches:
               only: main
             tags:
               ignore: /.*/
 
+  # Validation-only workflow (runs tests, no deploy, no tags)
   validation-only:
     when: << pipeline.parameters.validation_only >>
     jobs:
@@ -390,4 +392,3 @@ workflows:
               only: BRInt
             tags:
               ignore: /.*/
-
