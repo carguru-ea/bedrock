@@ -364,7 +364,7 @@ workflows:
   manual-main-deploy:
     when:
       and:
-        - << pipeline.parameters.auto_deploy >> == false
+        - << pipeline.parameters.auto_deploy >> 
         - << pipeline.parameters.validation_only >>  == false
     jobs:
       - deploy-main:
