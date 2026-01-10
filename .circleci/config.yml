@@ -217,7 +217,7 @@ commands:
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
-            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] || [ "$TAG_PREFIX" != "PROD" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
@@ -342,7 +342,7 @@ workflows:
     jobs:
       - deploy-main:
           context: sf-main
-          tag_prefix: ""
+          tag_prefix: "PROD"
           filters:
             branches:
               only: main
