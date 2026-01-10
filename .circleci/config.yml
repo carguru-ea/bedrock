@@ -5,7 +5,7 @@ orbs:
   slack: circleci/slack@4.12.5
 
 parameters:
-  run_auto_main_deploy:
+  auto_deploy:
     type: boolean
     default: false
     
@@ -310,9 +310,7 @@ jobs:
       - jwt-auth:
           target_env: PROD
       - deploy-with-tags:
-          tag_prefix: 
-
-
+          tag_prefix: << parameters.tag_prefix >>
 
 
 # ============================================================ 
@@ -322,7 +320,7 @@ workflows:
   version: 2
 
   build-test-deploy:
-    when: << pipeline.parameters.run_auto_main_deploy >> == false
+    when: << pipeline.parameters.auto_deploy >> == false
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
@@ -340,7 +338,7 @@ workflows:
 
 
   manual-main-deploy:
-    when: << pipeline.parameters.run_auto_main_deploy >>
+    when: << pipeline.parameters.auto_deploy >>  == false
     jobs:
       - deploy-main:
           context: sf-main
