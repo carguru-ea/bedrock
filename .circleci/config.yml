@@ -345,7 +345,7 @@ workflows:
               ignore: /.*/
 
   manual-main-deploy:
-    when: << pipeline.parameters.auto_deploy >>
+    when: << pipeline.parameters.auto_deploy >> == false
     jobs:
       - deploy-main:
           context: sf-main
