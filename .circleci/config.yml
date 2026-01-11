@@ -382,13 +382,16 @@ workflows:
   validation-only:
     when: << pipeline.parameters.validation_only >> 
     jobs:
-      - build-deploy-intqa:
+      - validate-org:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
           create_tags: false
           validation_only: true
           filters:
             branches:
-              only: BRInt
+              only:
+                - BRInt
+                - main
+                - BRStaging
             tags:
               ignore: /.*/
