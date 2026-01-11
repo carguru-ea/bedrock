@@ -325,6 +325,37 @@ jobs:
           create_tags: << parameters.create_tags >>
           validation_only: << parameters.validation_only >>
 
+  validate-org:
+    parameters:
+      tag_prefix:
+        type: string
+      create_tags:
+        type: boolean
+        default: false
+      validation_only:
+        type: boolean
+        default: true
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - deploy-with-tags:
+          tag_prefix: << parameters.tag_prefix >>
+          create_tags: false
+          validation_only: true
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+
+
 # ============================================================
 # WORKFLOWS
 # ============================================================
