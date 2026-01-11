@@ -28,23 +28,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-      - run:
-          name: Install jq (best effort)
-          command: |
-            if command -v jq >/dev/null 2>&1; then
-              echo "✅ jq already installed: $(jq --version)"
-            else
-              echo "📦 jq not found, installing..."
-              if command -v apt-get >/dev/null 2>&1; then
-                sudo apt-get update -y
-                sudo apt-get install -y jq
-              elif command -v apk >/dev/null 2>&1; then
-                sudo apk add --no-cache jq
-              else
-                echo "⚠️ Could not install jq (no apt-get/apk)."
-              fi
-              jq --version || true
-            fi
 
   jwt-auth:
     parameters:
