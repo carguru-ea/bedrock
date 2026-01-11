@@ -384,7 +384,7 @@ workflows:
     jobs:
       - validate-org:
           context: sf-intqa
-          tag_prefix: "RAVIDEV-"
+          tag_prefix: ""
           create_tags: false
           validation_only: true
           filters:
