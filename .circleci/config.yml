@@ -13,7 +13,7 @@ parameters:
     enum:
       - validate
       - deploy
-    default: none
+    default: validate
 
 # ============================================================
 # COMMANDS
