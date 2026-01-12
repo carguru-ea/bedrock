@@ -208,7 +208,7 @@ commands:
 # JOBS
 # ============================================================
 jobs:
-  build-deploy-intqa:
+  deploy-intqa:
     parameters:
       tag_prefix:
         type: string
@@ -352,7 +352,7 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
     jobs:
-      - build-deploy-intqa:
+      - deploy-intqa:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
           operation: deploy
@@ -370,36 +370,64 @@ workflows:
           operation: deploy
           create_tags: true
 
-  # ----------------------------------------------------------
-  # MANUAL: BRInt (Run Pipeline UI -> trigger_source=api)
-  # action_type dropdown decides validate vs deploy
-  # ----------------------------------------------------------
-  manual-brint:
-    when:
-      and:
-        - equal: [ api, << pipeline.trigger_source >> ]
-        - equal: [ BRInt, << pipeline.git.branch >> ]
-    jobs:
-      - build-deploy-intqa:
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: << pipeline.parameters.action_type >>
-          create_tags: true
+# ----------------------------------------------------------
+# MANUAL: BRInt (API only)
+# ----------------------------------------------------------
+manual-brint-deploy:
+  when:
+    and:
+      - equal: [ api, << pipeline.trigger_source >> ]
+      - equal: [ BRInt, << pipeline.git.branch >> ]
+      - equal: [ deploy, << pipeline.parameters.action_type >> ]
+  jobs:
+    - deploy-intqa:
+        context: sf-intqa
+        tag_prefix: "RAVIDEV-"
+        operation: deploy
+        create_tags: true
 
-  # ----------------------------------------------------------
-  # MANUAL: BRStaging
-  # ----------------------------------------------------------
-  manual-brstaging:
-    when:
-      and:
-        - equal: [ api, << pipeline.trigger_source >> ]
-        - equal: [ BRStaging, << pipeline.git.branch >> ]
-    jobs:
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: << pipeline.parameters.action_type >>
-          create_tags: true
+manual-brint-validate:
+  when:
+    and:
+      - equal: [ api, << pipeline.trigger_source >> ]
+      - equal: [ BRInt, << pipeline.git.branch >> ]
+      - equal: [ validate, << pipeline.parameters.action_type >> ]
+  jobs:
+    - deploy-intqa:
+        context: sf-intqa
+        tag_prefix: "RAVIDEV-"
+        operation: validate
+        create_tags: false  # validation should not tag
+
+# ----------------------------------------------------------
+# MANUAL: BRStaging (API only)
+# ----------------------------------------------------------
+manual-BRStaging-deploy:
+  when:
+    and:
+      - equal: [ api, << pipeline.trigger_source >> ]
+      - equal: [ BRStaging, << pipeline.git.branch >> ]
+      - equal: [ deploy, << pipeline.parameters.action_type >> ]
+  jobs:
+    - deploy-staging:
+        context: sf-staging
+        tag_prefix: "STAGINGUAT-"
+        operation: deploy
+        create_tags: true
+
+manual-BRStaging-validate:
+  when:
+    and:
+      - equal: [ api, << pipeline.trigger_source >> ]
+      - equal: [ BRStaging, << pipeline.git.branch >> ]
+      - equal: [ validate, << pipeline.parameters.action_type >> ]
+  jobs:
+    - deploy-staging:
+        context: sf-staging
+        tag_prefix: "STAGINGUAT-"
+        operation: validate
+        create_tags: false  # validation should not tag
+
 
   # ----------------------------------------------------------
   # MANUAL: main/prod
