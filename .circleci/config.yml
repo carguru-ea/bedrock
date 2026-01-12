@@ -107,13 +107,18 @@ commands:
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
+              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
+              echo "🔍 No tags found — FIRST RUN"
+              currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
@@ -208,7 +213,7 @@ commands:
 # JOBS
 # ============================================================
 jobs:
-  build-deploy-intqa:
+  deploy-intqa:
     parameters:
       tag_prefix:
         type: string
@@ -270,6 +275,9 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
+  # ----------------------------------------------------------
+  # MAIN/PROD JOBS (unchanged)
+  # ----------------------------------------------------------
   main-deploy:
     docker:
       - image: cimg/node:20.10
@@ -344,7 +352,7 @@ workflows:
 
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
-  # (runs only on webhook-triggered pipelines)
+  # (NO main auto workflow on merge)
   # ----------------------------------------------------------
   auto-brint:
     when:
@@ -352,7 +360,8 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
     jobs:
-      - build-deploy-intqa:
+      - deploy-intqa:
+          name: deploy-intqa
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
           operation: deploy
@@ -365,44 +374,78 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
       - deploy-staging:
+          name: deploy-staging
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
           operation: deploy
           create_tags: true
 
   # ----------------------------------------------------------
-  # MANUAL: BRInt (Run Pipeline UI -> trigger_source=api)
-  # action_type dropdown decides validate vs deploy
+  # MANUAL: BRInt (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-brint:
+  manual-brint-deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - build-deploy-intqa:
+      - deploy-intqa:
+          name: deploy-intqa
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
-          operation: << pipeline.parameters.action_type >>
+          operation: deploy
           create_tags: true
 
+  manual-brint-validate:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-intqa:
+          name: validate-intqa
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: validate
+          create_tags: false
+
   # ----------------------------------------------------------
-  # MANUAL: BRStaging
+  # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-brstaging:
+  manual-brstaging-deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
       - deploy-staging:
+          name: deploy-staging
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
-          operation: << pipeline.parameters.action_type >>
+          operation: deploy
           create_tags: true
 
+  manual-brstaging-validate:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-staging:
+          name: validate-staging
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: validate
+          create_tags: false
+
   # ----------------------------------------------------------
-  # MANUAL: main/prod
+  # MANUAL: main/prod (API only)
+  # - Nothing triggers on merge to main because we have NO webhook workflow for main
+  # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
   manual-main-deploy:
     when:
@@ -412,6 +455,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
       - main-deploy:
+          name: deploy-main
           context: sf-prod
 
   manual-main-validate:
@@ -422,4 +466,5 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
       - main-validate:
+          name: validate-main
           context: sf-prod
