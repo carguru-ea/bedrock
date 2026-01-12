@@ -4,7 +4,7 @@
 public class AccountUtility {
     
     /**
-     * @description Get account by IDdd
+     * @description Get account by IDdds
      * @param accountId The account ID
      * @return Account record
      */
