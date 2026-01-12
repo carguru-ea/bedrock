@@ -350,7 +350,6 @@ workflows:
 
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
-  # (runs only on webhook-triggered pipelines)
   # ----------------------------------------------------------
   auto-brint:
     when:
@@ -376,67 +375,66 @@ workflows:
           operation: deploy
           create_tags: true
 
-# ----------------------------------------------------------
-# MANUAL: BRInt (API only)
-# ----------------------------------------------------------
-manual-brint-deploy:
-  when:
-    and:
-      - equal: [ api, << pipeline.trigger_source >> ]
-      - equal: [ BRInt, << pipeline.git.branch >> ]
-      - equal: [ deploy, << pipeline.parameters.action_type >> ]
-  jobs:
-    - deploy-intqa:
-        context: sf-intqa
-        tag_prefix: "RAVIDEV-"
-        operation: deploy
-        create_tags: true
+  # ----------------------------------------------------------
+  # MANUAL: BRInt (API only)
+  # ----------------------------------------------------------
+  manual-brint-deploy:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: deploy
+          create_tags: true
 
-manual-brint-validate:
-  when:
-    and:
-      - equal: [ api, << pipeline.trigger_source >> ]
-      - equal: [ BRInt, << pipeline.git.branch >> ]
-      - equal: [ validate, << pipeline.parameters.action_type >> ]
-  jobs:
-    - deploy-intqa:
-        context: sf-intqa
-        tag_prefix: "RAVIDEV-"
-        operation: validate
-        create_tags: false  # validation should not tag
-
-# ----------------------------------------------------------
-# MANUAL: BRStaging (API only)
-# ----------------------------------------------------------
-manual-BRStaging-deploy:
-  when:
-    and:
-      - equal: [ api, << pipeline.trigger_source >> ]
-      - equal: [ BRStaging, << pipeline.git.branch >> ]
-      - equal: [ deploy, << pipeline.parameters.action_type >> ]
-  jobs:
-    - deploy-staging:
-        context: sf-staging
-        tag_prefix: "STAGINGUAT-"
-        operation: deploy
-        create_tags: true
-
-manual-BRStaging-validate:
-  when:
-    and:
-      - equal: [ api, << pipeline.trigger_source >> ]
-      - equal: [ BRStaging, << pipeline.git.branch >> ]
-      - equal: [ validate, << pipeline.parameters.action_type >> ]
-  jobs:
-    - deploy-staging:
-        context: sf-staging
-        tag_prefix: "STAGINGUAT-"
-        operation: validate
-        create_tags: false  # validation should not tag
-
+  manual-brint-validate:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: validate
+          create_tags: false
 
   # ----------------------------------------------------------
-  # MANUAL: main/prod
+  # MANUAL: BRStaging (API only)
+  # ----------------------------------------------------------
+  manual-brstaging-deploy:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: deploy
+          create_tags: true
+
+  manual-brstaging-validate:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: validate
+          create_tags: false
+
+  # ----------------------------------------------------------
+  # MANUAL: main/prod (API only)
   # ----------------------------------------------------------
   manual-main-deploy:
     when:
