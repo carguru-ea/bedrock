@@ -107,17 +107,23 @@ commands:
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
+              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
+              echo "🔍 No tags found — FIRST RUN"
+              currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
+
 
       - run:
           name: Build Manifest
