@@ -8,13 +8,13 @@ orbs:
 # PIPELINE PARAMETERS (manual triggers for MAIN only)
 # ============================================================
 parameters:
-  run_main_deploy:
-    type: boolean
-    default: false
-
-  run_main_validate:
-    type: boolean
-    default: false
+  main_action:
+    type: enum
+    enum:
+      - none
+      - validate
+      - deploy
+    default: none
 
 # ============================================================
 # COMMANDS
@@ -214,7 +214,7 @@ commands:
               --wait 360
 
       # --------------------------------------------------------
-      # Create New Tag (static: enabled for BRInt/BRStaging, disabled for main)
+      # Create New Tag (enabled for BRInt/BRStaging, disabled for main)
       # --------------------------------------------------------
       - run:
           name: Create & Push Tag
@@ -408,9 +408,10 @@ workflows:
             branches:
               only: BRStaging
 
-  # Manual-only main deploy (runs ONLY when run_main_deploy=true)
+  # Manual-only main deploy (runs ONLY when main_action=deploy)
   main-manual-deploy:
-    when: << pipeline.parameters.run_main_deploy >>
+    when:
+      equal: [ deploy, << pipeline.parameters.main_action >> ]
     jobs:
       - main-deploy:
           context: sf-prod
@@ -418,9 +419,10 @@ workflows:
             branches:
               only: main
 
-  # Manual-only main validation (runs ONLY when run_main_validate=true)
+  # Manual-only main validation (runs ONLY when main_action=validate)
   main-manual-validate:
-    when: << pipeline.parameters.run_main_validate >>
+    when:
+      equal: [ validate, << pipeline.parameters.main_action >> ]
     jobs:
       - main-validate:
           context: sf-prod
