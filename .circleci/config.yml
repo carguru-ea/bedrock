@@ -5,21 +5,9 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ============================================================
-# PIPELINE PARAMETERS (manual triggers)
-# - env_target controls WHICH env's manual workflow runs
-# - action_type controls deploy vs validate
-# Default env_target=none ensures NO manual workflows run on PR merges/pushes.
+# PIPELINE PARAMETER (single dropdown)
 # ============================================================
 parameters:
-  env_target:
-    type: enum
-    enum:
-      - none
-      - intqa
-      - staging
-      - prod
-    default: none
-
   action_type:
     type: enum
     enum:
@@ -31,7 +19,6 @@ parameters:
 # COMMANDS
 # ============================================================
 commands:
-
   install-tooling:
     steps:
       - node/install:
@@ -68,7 +55,7 @@ commands:
   # ----------------------------------------------------------
   # DEPLOY/VALIDATE WITH TAGS + CANCEL ACTIVE DEPLOYS
   # operation: deploy | validate
-  # create_tags: true|false (tags only created on operation=deploy)
+  # create_tags: true|false (tags only for deploy)
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
@@ -82,7 +69,6 @@ commands:
         type: boolean
         default: true
     steps:
-
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -106,15 +92,7 @@ commands:
                 echo "⛔ Canceling deployment: $deployId"
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
-                if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
-                  echo "ℹ️ Deployment $deployId already completed — skipping."
-                elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
-                  echo "⚠️ Could not cancel deployment $deployId — ignoring."
-                else
-                  echo "✔️ Cancel command processed for $deployId"
-                fi
               done
-              echo "✔️ Safe cancel complete — continuing pipeline."
             fi
             true
 
@@ -129,18 +107,13 @@ commands:
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
-              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
-              echo "🔍 No tags found — FIRST RUN"
-              currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
@@ -155,21 +128,15 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
-              | sed -E 's#.*(force-app/.*)#\1#' \
-              > files.txt || true
+              | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
@@ -177,29 +144,22 @@ commands:
           name: Deploy / Validate Metadata
           command: |
             source $BASH_ENV
-
             OPERATION="<< parameters.operation >>"
 
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
-            echo "OPERATION=$OPERATION"
-            echo "FIRST_RUN=$FIRST_RUN"
-            echo "CHANGES_FOUND=$CHANGES_FOUND"
 
             if [ "$CHANGES_FOUND" != "true" ]; then
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
             if [ "$OPERATION" = "validate" ]; then
-              echo "🧪 VALIDATION (dry run) starting..."
               sf project deploy validate \
                 --manifest package.xml \
                 --target-org target \
                 --test-level RunLocalTests \
                 --wait 360
             else
-              echo "🚀 DEPLOY starting..."
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
@@ -211,9 +171,9 @@ commands:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
-            TAG_PREFIX="<< parameters.tag_prefix >>"
-            CREATE_TAGS="<< parameters.create_tags >>"
             OPERATION="<< parameters.operation >>"
+            CREATE_TAGS="<< parameters.create_tags >>"
+            TAG_PREFIX="<< parameters.tag_prefix >>"
 
             if [ "$OPERATION" = "validate" ]; then
               echo "Validation run — no tag creation."
@@ -221,7 +181,7 @@ commands:
             fi
 
             if [ "$CREATE_TAGS" != "true" ]; then
-              echo "Tag creation disabled for this job (create_tags=false). Skipping."
+              echo "Tag creation disabled (create_tags=false)."
               exit 0
             fi
 
@@ -237,7 +197,6 @@ commands:
 
               git config user.email "circleci@cargurus.com"
               git config user.name "CircleCI"
-
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
@@ -249,8 +208,6 @@ commands:
 # JOBS
 # ============================================================
 jobs:
-
-  # ---------------- INTQA ----------------
   build-deploy-intqa:
     parameters:
       tag_prefix:
@@ -273,18 +230,15 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
-
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ---------------- STAGING ----------------
   deploy-staging:
     parameters:
       tag_prefix:
@@ -307,18 +261,15 @@ jobs:
           tag_prefix: << parameters.tag_prefix >>
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
-
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ---------------- MAIN (PROD) FULL DEPLOY ----------------
   main-deploy:
     docker:
       - image: cimg/node:20.10
@@ -327,14 +278,12 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: PROD
-
       - run:
           name: Full Manifest (main)
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             sf project generate manifest --source-dir force-app > /dev/null
-
       - run:
           name: Deploy (main - full sync)
           command: |
@@ -345,18 +294,15 @@ jobs:
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
-
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ---------------- MAIN (PROD) VALIDATION ONLY ----------------
   main-validate:
     docker:
       - image: cimg/node:20.10
@@ -365,14 +311,12 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: PROD
-
       - run:
           name: Full Manifest (main validation)
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             sf project generate manifest --source-dir force-app > /dev/null
-
       - run:
           name: Validate Only (main - dry run)
           command: |
@@ -383,12 +327,10 @@ jobs:
               --target-org target \
               --test-level RunLocalTests \
               --wait 360
-
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_fail_1
-
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
@@ -401,85 +343,83 @@ workflows:
   version: 2
 
   # ----------------------------------------------------------
-  # AUTO: PR merge to BRInt / BRStaging triggers deploy + tags
+  # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
+  # (runs only on webhook-triggered pipelines)
   # ----------------------------------------------------------
-  build-test-deploy:
-    jobs:
-      - build-deploy-intqa:
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
-          filters:
-            branches:
-              only: BRInt
-
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
-          filters:
-            branches:
-              only: BRStaging
-
-  # ----------------------------------------------------------
-  # MANUAL: INTQA (runs ONLY when env_target=intqa)
-  # Use action_type dropdown to choose validate/deploy
-  # ----------------------------------------------------------
-  manual-intqa:
-    when:
-      equal: [ intqa, << pipeline.parameters.env_target >> ]
-    jobs:
-      - build-deploy-intqa:
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: << pipeline.parameters.action_type >>
-          # tags only on deploy; validate will skip anyway
-          create_tags: true
-          filters:
-            branches:
-              only: BRInt
-
-  # ----------------------------------------------------------
-  # MANUAL: STAGING (runs ONLY when env_target=staging)
-  # ----------------------------------------------------------
-  manual-staging:
-    when:
-      equal: [ staging, << pipeline.parameters.env_target >> ]
-    jobs:
-      - deploy-staging:
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: << pipeline.parameters.action_type >>
-          create_tags: true
-          filters:
-            branches:
-              only: BRStaging
-
-  # ----------------------------------------------------------
-  # MANUAL: PROD (runs ONLY when env_target=prod)
-  # ----------------------------------------------------------
-  manual-prod-deploy:
+  auto-brint:
     when:
       and:
-        - equal: [ prod, << pipeline.parameters.env_target >> ]
+        - equal: [ webhook, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+    jobs:
+      - build-deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: deploy
+          create_tags: true
+
+  auto-brstaging:
+    when:
+      and:
+        - equal: [ webhook, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+    jobs:
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: deploy
+          create_tags: true
+
+  # ----------------------------------------------------------
+  # MANUAL: BRInt (Run Pipeline UI -> trigger_source=api)
+  # action_type dropdown decides validate vs deploy
+  # ----------------------------------------------------------
+  manual-brint:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+    jobs:
+      - build-deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: << pipeline.parameters.action_type >>
+          create_tags: true
+
+  # ----------------------------------------------------------
+  # MANUAL: BRStaging
+  # ----------------------------------------------------------
+  manual-brstaging:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+    jobs:
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: << pipeline.parameters.action_type >>
+          create_tags: true
+
+  # ----------------------------------------------------------
+  # MANUAL: main/prod
+  # ----------------------------------------------------------
+  manual-main-deploy:
+    when:
+      and:
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
       - main-deploy:
           context: sf-prod
-          filters:
-            branches:
-              only: main
 
-  manual-prod-validate:
+  manual-main-validate:
     when:
       and:
-        - equal: [ prod, << pipeline.parameters.env_target >> ]
+        - equal: [ api, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
       - main-validate:
           context: sf-prod
-          filters:
-            branches:
-              only: main
