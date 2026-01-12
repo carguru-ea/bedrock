@@ -6,15 +6,17 @@ orbs:
 
 # ============================================================
 # PIPELINE PARAMETERS (manual triggers for MAIN only)
+# NOTE:
+# - action_type is a dropdown (enum) in "Run Pipeline"
+# - main will NOT auto-run on merge; only runs when action_type is set manually
 # ============================================================
 parameters:
-  main_action:
+  action_type:
     type: enum
     enum:
-      - none
       - validate
       - deploy
-    default: none
+    default: validate
 
 # ============================================================
 # COMMANDS
@@ -214,7 +216,7 @@ commands:
               --wait 360
 
       # --------------------------------------------------------
-      # Create New Tag (enabled for BRInt/BRStaging, disabled for main)
+      # Create New Tag (enabled for BRInt/BRStaging; disabled for main)
       # --------------------------------------------------------
       - run:
           name: Create & Push Tag
@@ -391,7 +393,7 @@ jobs:
 workflows:
   version: 2
 
-  # Auto deploys on BRInt and BRStaging ONLY
+  # Auto deploys on BRInt and BRStaging ONLY (runs on PR merge to those branches)
   build-test-deploy:
     jobs:
       - build-deploy-intqa:
@@ -408,10 +410,12 @@ workflows:
             branches:
               only: BRStaging
 
-  # Manual-only main deploy (runs ONLY when main_action=deploy)
+  # Manual-only main deploy (runs ONLY when action_type=deploy)
   main-manual-deploy:
     when:
-      equal: [ deploy, << pipeline.parameters.main_action >> ]
+      and:
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
     jobs:
       - main-deploy:
           context: sf-prod
@@ -419,10 +423,12 @@ workflows:
             branches:
               only: main
 
-  # Manual-only main validation (runs ONLY when main_action=validate)
+  # Manual-only main validation (runs ONLY when action_type=validate)
   main-manual-validate:
     when:
-      equal: [ validate, << pipeline.parameters.main_action >> ]
+      and:
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
     jobs:
       - main-validate:
           context: sf-prod
