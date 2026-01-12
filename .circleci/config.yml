@@ -354,7 +354,7 @@ workflows:
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
-  auto-brint:
+  auto-brint-deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -367,7 +367,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  auto-brstaging:
+  auto-brstaging-deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
