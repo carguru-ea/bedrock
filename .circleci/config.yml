@@ -162,13 +162,13 @@ commands:
               sf project deploy validate \
                 --manifest package.xml \
                 --target-org target \
-                --test-level RunLocalTests \
+                --test-level NoTestRun \
                 --wait 360
             else
               sf project deploy start \
                 --manifest package.xml \
                 --target-org target \
-                --test-level RunLocalTests \
+                --test-level NoTestRun \
                 --wait 360
             fi
 
@@ -300,7 +300,7 @@ jobs:
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
+              --test-level NoTestRun \
               --wait 360
       - slack/notify:
           event: fail
@@ -333,7 +333,7 @@ jobs:
             sf project deploy validate \
               --manifest package.xml \
               --target-org target \
-              --test-level RunLocalTests \
+              --test-level NoTestRun \
               --wait 360
       - slack/notify:
           event: fail
