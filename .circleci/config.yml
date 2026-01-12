@@ -354,7 +354,7 @@ workflows:
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
-  auto-brint-deploy:
+  auto-brint:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -367,7 +367,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  auto-brstaging-deploy:
+  auto-brstaging:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -381,9 +381,9 @@ workflows:
           create_tags: true
 
   # ----------------------------------------------------------
-  # MANUAL: BRInt (API only) - deploy or validate via action_type
+  # MANUAL: BRInt deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-brint-deploy:
+  manual-brint:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -397,7 +397,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-brint-validate:
+  manual-brint:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -414,7 +414,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-brstaging-deploy:
+  manual-brstaging:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -428,7 +428,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-brstaging-validate:
+  manual-brstaging:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -447,7 +447,7 @@ workflows:
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
   # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
-  manual-main-deploy:
+  manual-main:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -458,7 +458,7 @@ workflows:
           name: deploy-main
           context: sf-prod
 
-  manual-main-validate:
+  manual-main:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
