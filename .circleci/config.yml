@@ -5,28 +5,33 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ============================================================
-# PIPELINE PARAMETERS (manual triggers for MAIN only)
-# NOTE:
-# - action_type is a dropdown (enum) in "Run Pipeline"
-# - main will NOT auto-run on merge; only runs when action_type is set manually
+# PIPELINE PARAMETERS (manual triggers)
+# - env_target controls WHICH env's manual workflow runs
+# - action_type controls deploy vs validate
+# Default env_target=none ensures NO manual workflows run on PR merges/pushes.
 # ============================================================
 parameters:
-  action_type:
+  env_target:
     type: enum
     enum:
       - none
+      - intqa
+      - staging
+      - prod
+    default: none
+
+  action_type:
+    type: enum
+    enum:
       - validate
       - deploy
-    default: none
+    default: validate
 
 # ============================================================
 # COMMANDS
 # ============================================================
 commands:
 
-  # ----------------------------------------------------------
-  # Install Tooling
-  # ----------------------------------------------------------
   install-tooling:
     steps:
       - node/install:
@@ -37,9 +42,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # JWT Authentication
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -64,20 +66,23 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # DEPLOY WITH TAGS + CANCEL ACTIVE DEPLOYS
+  # DEPLOY/VALIDATE WITH TAGS + CANCEL ACTIVE DEPLOYS
+  # operation: deploy | validate
+  # create_tags: true|false (tags only created on operation=deploy)
   # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
         type: string
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
       create_tags:
         type: boolean
         default: true
     steps:
 
-      # --------------------------------------------------------
-      # Check & Cancel Pending/InProgress Deployments
-      # --------------------------------------------------------
       - run:
           name: Cancel Existing Deploys (Safe Mode)
           command: |
@@ -91,20 +96,16 @@ commands:
              ORDER BY CreatedDate DESC" --json)
 
             echo "$ACTIVE_DEPLOYS" | jq .
-
             DEPLOY_IDS=$(echo "$ACTIVE_DEPLOYS" | jq -r '.result.records[].Id')
 
             if [ -z "$DEPLOY_IDS" ] || [ "$DEPLOY_IDS" = "null" ]; then
               echo "✅ No active deployments found."
             else
               echo "⚠️ Deployments found — attempting cancel..."
-
               for deployId in $DEPLOY_IDS; do
                 echo "⛔ Canceling deployment: $deployId"
-
                 CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
                 echo "$CANCEL_OUTPUT"
-
                 if echo "$CANCEL_OUTPUT" | grep -qi "already completed"; then
                   echo "ℹ️ Deployment $deployId already completed — skipping."
                 elif echo "$CANCEL_OUTPUT" | grep -qi "CannotCancelDeployError"; then
@@ -113,15 +114,10 @@ commands:
                   echo "✔️ Cancel command processed for $deployId"
                 fi
               done
-
               echo "✔️ Safe cancel complete — continuing pipeline."
             fi
-
             true
 
-      # --------------------------------------------------------
-      # Identify most recent tag
-      # --------------------------------------------------------
       - run:
           name: Find Most Recent Tag
           command: |
@@ -150,9 +146,6 @@ commands:
 
             echo "export CURRENT_REF=$currentRef" >> $BASH_ENV
 
-      # --------------------------------------------------------
-      # Build Delta Manifest
-      # --------------------------------------------------------
       - run:
           name: Build Manifest
           command: |
@@ -180,51 +173,52 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Deploy (Delta or Full)
-      # --------------------------------------------------------
       - run:
-          name: Deploy Metadata
+          name: Deploy / Validate Metadata
           command: |
             source $BASH_ENV
+
+            OPERATION="<< parameters.operation >>"
 
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "OPERATION=$OPERATION"
             echo "FIRST_RUN=$FIRST_RUN"
             echo "CHANGES_FOUND=$CHANGES_FOUND"
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
-              echo "🔄 DELTA deploy"
-              DEPLOY_TYPE="DELTA"
-            else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                DEPLOY_TYPE="FULL_FIRST_RUN"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-                DEPLOY_TYPE="FULL_NO_TAG"
-              fi
-
+            if [ "$CHANGES_FOUND" != "true" ]; then
               sf project generate manifest --source-dir force-app > /dev/null
             fi
 
-            echo "🚀 Running $DEPLOY_TYPE deployment..."
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level RunLocalTests \
-              --wait 360
+            if [ "$OPERATION" = "validate" ]; then
+              echo "🧪 VALIDATION (dry run) starting..."
+              sf project deploy validate \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+            else
+              echo "🚀 DEPLOY starting..."
+              sf project deploy start \
+                --manifest package.xml \
+                --target-org target \
+                --test-level RunLocalTests \
+                --wait 360
+            fi
 
-      # --------------------------------------------------------
-      # Create New Tag (enabled for BRInt/BRStaging; disabled for main)
-      # --------------------------------------------------------
       - run:
           name: Create & Push Tag
           command: |
             source $BASH_ENV
             TAG_PREFIX="<< parameters.tag_prefix >>"
             CREATE_TAGS="<< parameters.create_tags >>"
+            OPERATION="<< parameters.operation >>"
+
+            if [ "$OPERATION" = "validate" ]; then
+              echo "Validation run — no tag creation."
+              exit 0
+            fi
 
             if [ "$CREATE_TAGS" != "true" ]; then
               echo "Tag creation disabled for this job (create_tags=false). Skipping."
@@ -261,6 +255,13 @@ jobs:
     parameters:
       tag_prefix:
         type: string
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+      create_tags:
+        type: boolean
+        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -270,7 +271,8 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags: true
+          operation: << parameters.operation >>
+          create_tags: << parameters.create_tags >>
 
       - slack/notify:
           event: fail
@@ -287,6 +289,13 @@ jobs:
     parameters:
       tag_prefix:
         type: string
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+      create_tags:
+        type: boolean
+        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -296,7 +305,8 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags: true
+          operation: << parameters.operation >>
+          create_tags: << parameters.create_tags >>
 
       - slack/notify:
           event: fail
@@ -308,7 +318,7 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ---------------- MAIN (PROD) FULL DEPLOY - MANUAL ONLY ----------------
+  # ---------------- MAIN (PROD) FULL DEPLOY ----------------
   main-deploy:
     docker:
       - image: cimg/node:20.10
@@ -324,14 +334,12 @@ jobs:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             sf project generate manifest --source-dir force-app > /dev/null
-            echo "Generated full package.xml for main deploy."
 
       - run:
           name: Deploy (main - full sync)
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             sf project deploy start \
               --manifest package.xml \
               --target-org target \
@@ -348,7 +356,7 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ---------------- MAIN (PROD) VALIDATION ONLY - MANUAL ONLY ----------------
+  # ---------------- MAIN (PROD) VALIDATION ONLY ----------------
   main-validate:
     docker:
       - image: cimg/node:20.10
@@ -364,14 +372,12 @@ jobs:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
             sf project generate manifest --source-dir force-app > /dev/null
-            echo "Generated full package.xml for main validation."
 
       - run:
           name: Validate Only (main - dry run)
           command: |
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             sf project deploy validate \
               --manifest package.xml \
               --target-org target \
@@ -394,12 +400,16 @@ jobs:
 workflows:
   version: 2
 
-  # Auto deploys on BRInt and BRStaging ONLY (runs on PR merge to those branches)
+  # ----------------------------------------------------------
+  # AUTO: PR merge to BRInt / BRStaging triggers deploy + tags
+  # ----------------------------------------------------------
   build-test-deploy:
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
+          operation: deploy
+          create_tags: true
           filters:
             branches:
               only: BRInt
@@ -407,16 +417,54 @@ workflows:
       - deploy-staging:
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
+          operation: deploy
+          create_tags: true
           filters:
             branches:
               only: BRStaging
 
-  # Manual-only main deploy (runs ONLY when action_type=deploy)
-  main-manual-deploy:
+  # ----------------------------------------------------------
+  # MANUAL: INTQA (runs ONLY when env_target=intqa)
+  # Use action_type dropdown to choose validate/deploy
+  # ----------------------------------------------------------
+  manual-intqa:
+    when:
+      equal: [ intqa, << pipeline.parameters.env_target >> ]
+    jobs:
+      - build-deploy-intqa:
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: << pipeline.parameters.action_type >>
+          # tags only on deploy; validate will skip anyway
+          create_tags: true
+          filters:
+            branches:
+              only: BRInt
+
+  # ----------------------------------------------------------
+  # MANUAL: STAGING (runs ONLY when env_target=staging)
+  # ----------------------------------------------------------
+  manual-staging:
+    when:
+      equal: [ staging, << pipeline.parameters.env_target >> ]
+    jobs:
+      - deploy-staging:
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: << pipeline.parameters.action_type >>
+          create_tags: true
+          filters:
+            branches:
+              only: BRStaging
+
+  # ----------------------------------------------------------
+  # MANUAL: PROD (runs ONLY when env_target=prod)
+  # ----------------------------------------------------------
+  manual-prod-deploy:
     when:
       and:
+        - equal: [ prod, << pipeline.parameters.env_target >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
-        - equal: [ main, << pipeline.git.branch >> ]
     jobs:
       - main-deploy:
           context: sf-prod
@@ -424,12 +472,11 @@ workflows:
             branches:
               only: main
 
-  # Manual-only main validation (runs ONLY when action_type=validate)
-  main-manual-validate:
+  manual-prod-validate:
     when:
       and:
+        - equal: [ prod, << pipeline.parameters.env_target >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
-        - equal: [ main, << pipeline.git.branch >> ]
     jobs:
       - main-validate:
           context: sf-prod
