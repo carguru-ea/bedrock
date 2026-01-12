@@ -14,9 +14,10 @@ parameters:
   action_type:
     type: enum
     enum:
+      - none
       - validate
       - deploy
-    default: validate
+    default: none
 
 # ============================================================
 # COMMANDS
