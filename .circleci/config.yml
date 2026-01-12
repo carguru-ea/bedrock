@@ -5,7 +5,7 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ============================================================
-# PIPELINE PARAMETERS (manual triggers)
+# PIPELINE PARAMETERS (manual triggers for MAIN only)
 # ============================================================
 parameters:
   run_main_deploy:
@@ -15,12 +15,6 @@ parameters:
   run_main_validate:
     type: boolean
     default: false
-
-  # Controls tag creation for tag-based deploy jobs (INTQA/STAGING).
-  # main jobs will not create tags (full sync), regardless.
-  create_tags:
-    type: boolean
-    default: true
 
 # ============================================================
 # COMMANDS
@@ -220,7 +214,7 @@ commands:
               --wait 360
 
       # --------------------------------------------------------
-      # Create New Tag (controlled by create_tags)
+      # Create New Tag (static: enabled for BRInt/BRStaging, disabled for main)
       # --------------------------------------------------------
       - run:
           name: Create & Push Tag
@@ -230,7 +224,7 @@ commands:
             CREATE_TAGS="<< parameters.create_tags >>"
 
             if [ "$CREATE_TAGS" != "true" ]; then
-              echo "Tag creation disabled (create_tags=false). Skipping."
+              echo "Tag creation disabled for this job (create_tags=false). Skipping."
               exit 0
             fi
 
@@ -264,9 +258,6 @@ jobs:
     parameters:
       tag_prefix:
         type: string
-      create_tags:
-        type: boolean
-        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -276,7 +267,7 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags: << parameters.create_tags >>
+          create_tags: true
 
       - slack/notify:
           event: fail
@@ -293,9 +284,6 @@ jobs:
     parameters:
       tag_prefix:
         type: string
-      create_tags:
-        type: boolean
-        default: true
     docker:
       - image: cimg/node:20.10
     steps:
@@ -305,7 +293,7 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
-          create_tags: << parameters.create_tags >>
+          create_tags: true
 
       - slack/notify:
           event: fail
@@ -403,13 +391,12 @@ jobs:
 workflows:
   version: 2
 
-  # Auto deploys on BRInt and BRStaging ONLY (unchanged behavior)
+  # Auto deploys on BRInt and BRStaging ONLY
   build-test-deploy:
     jobs:
       - build-deploy-intqa:
           context: sf-intqa
           tag_prefix: "RAVIDEV-"
-          create_tags: << pipeline.parameters.create_tags >>
           filters:
             branches:
               only: BRInt
@@ -417,7 +404,6 @@ workflows:
       - deploy-staging:
           context: sf-staging
           tag_prefix: "STAGINGUAT-"
-          create_tags: << pipeline.parameters.create_tags >>
           filters:
             branches:
               only: BRStaging
