@@ -9,8 +9,8 @@ orbs:
 # ============================================================
 parameters:
   action_type:
-    type: String
-    String:
+    type: enum
+    enum:
       - validate
       - deploy
     default: validate
