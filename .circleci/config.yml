@@ -133,21 +133,15 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
-
-
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
@@ -356,9 +350,9 @@ jobs:
 workflows:
   version: 2
 
+
   # ----------------------------------------------------------
-  # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
-  # (NO main auto workflow on merge)
+  # Scheduled: Nightly Full Sync to BRInt / BRStaging -> deploy + tags
   # ----------------------------------------------------------
   scheduled-BRInt-deploy:
     when:
@@ -386,13 +380,11 @@ workflows:
           operation: deploy
           create_tags: true
 
-
-
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
-  auto-BRInt-deploy:
+  Auto-BRInt-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -405,7 +397,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  auto-BRStaging-deploy:
+  Auto-BRStaging-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -421,7 +413,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRInt-deploy:
+  Manual-BRInt-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -435,7 +427,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-BRInt-validate:
+  Manual-BRInt-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -452,7 +444,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRStaging-deploy:
+  Manual-BRStaging-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -466,7 +458,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-BRStaging-validate:
+  Manual-BRStaging-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -485,7 +477,7 @@ workflows:
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
   # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
-  manual-main-deploy:
+  Manual-main-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -496,7 +488,7 @@ workflows:
           name: deploy-main
           context: sf-prod
 
-  manual-main-validate:
+  Manual-main-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
