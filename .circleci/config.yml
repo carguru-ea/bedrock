@@ -361,8 +361,10 @@ workflows:
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
   auto-BRInt-deploy:
-    when: >
-      pipeline.trigger_parameters.circleci.event_type == "push" and pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6"
+    when:
+      and:
+        - equal: [ webhook, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
     jobs:
       - deploy-intqa:
           name: deploy-intqa
