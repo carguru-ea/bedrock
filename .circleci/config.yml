@@ -360,6 +360,38 @@ workflows:
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
+  scheduled-BRInt-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+    jobs:
+      - deploy-intqa:
+          name: deploy-intqa
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: deploy
+          create_tags: true
+
+  scheduled-BRStaging-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+    jobs:
+      - deploy-staging:
+          name: deploy-staging
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: deploy
+          create_tags: true
+
+
+
+  # ----------------------------------------------------------
+  # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
+  # (NO main auto workflow on merge)
+  # ----------------------------------------------------------
   auto-BRInt-deploy:
     when:
       and:
