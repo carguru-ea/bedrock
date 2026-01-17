@@ -4,7 +4,7 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ============================================================ 
+# ============================================================
 # PIPELINE PARAMETER (single dropdown)
 # ============================================================
 parameters:
@@ -361,12 +361,8 @@ workflows:
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
   auto-BRInt-deploy:
-    when:
-      and:
-        - equal: [ BRInt, << pipeline.git.branch >> ]
-        - equal: [webhook , <<pipeline.trigger_parameters.circleci.event_type>> ]
-        - equal: [ 2494d316-bb57-4386-844b-c901e36827c6, << pipeline.definition.id >> ]
-
+    when: >
+      pipeline.trigger_parameters.circleci.event_type == "push" and pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6"
     jobs:
       - deploy-intqa:
           name: deploy-intqa
