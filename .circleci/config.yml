@@ -360,11 +360,57 @@ workflows:
   # ----------------------------------------------------------
   # Scheduled: Nightly Full Sync to BRInt / BRStaging -> deploy + tags
   # ----------------------------------------------------------
-  scheduled-BRInt-deploy:
+  Scheduled-BRInt-Validate:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+
+    jobs:
+      - validate-intqa:
+          name: validate-intqa
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: validate
+          create_tags: true
+
+  Scheduled-BRStaging-Validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - validate-staging:
+          name: validate-staging
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: validate
+          create_tags: true
+
+  Scheduled-main-Validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - validate-main:
+          name: validate-main
+          context: sf-main
+          tag_prefix: ""
+          operation: validate
+          create_tags: false
+
+
+  Scheduled-BRInt-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+
     jobs:
       - deploy-intqa:
           name: deploy-intqa
@@ -373,11 +419,12 @@ workflows:
           operation: deploy
           create_tags: true
 
-  scheduled-BRStaging-deploy:
+  Scheduled-BRStaging-deploy:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
       - deploy-staging:
           name: deploy-staging
@@ -386,6 +433,19 @@ workflows:
           operation: deploy
           create_tags: true
 
+  Scheduled-main-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-main:
+          name: deploy-main
+          context: sf-main
+          tag_prefix: ""
+          operation: deploy
+          create_tags: false
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
