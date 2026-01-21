@@ -356,13 +356,61 @@ jobs:
 workflows:
   version: 2
 
+
   # ----------------------------------------------------------
-  # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
-  # (NO main auto workflow on merge)
+  # Scheduled: Nightly Full Sync to BRInt / BRStaging -> deploy + tags
   # ----------------------------------------------------------
-  auto-BRInt-deploy:
-    when: >
-      pipeline.trigger_parameters.circleci.event_type == "push" and pipeline.definition.id == "2494d316-bb57-4386-844b-c901e36827c6"
+  Scheduled-BRInt-Validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+
+    jobs:
+      - validate-intqa:
+          name: validate-intqa
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: validate
+          create_tags: true
+
+  Scheduled-BRStaging-Validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - validate-staging:
+          name: validate-staging
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: validate
+          create_tags: true
+
+  Scheduled-main-Validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+      - validate-main:
+          name: validate-main
+          context: sf-main
+          tag_prefix: ""
+          operation: validate
+          create_tags: false
+
+
+  Scheduled-BRInt-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+
     jobs:
       - deploy-intqa:
           name: deploy-intqa
@@ -371,7 +419,51 @@ workflows:
           operation: deploy
           create_tags: true
 
-  auto-BRStaging-deploy:
+  Scheduled-BRStaging-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-staging:
+          name: deploy-staging
+          context: sf-staging
+          tag_prefix: "STAGINGUAT-"
+          operation: deploy
+          create_tags: true
+
+  Scheduled-main-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+      - deploy-main:
+          name: deploy-main
+          context: sf-main
+          tag_prefix: ""
+          operation: deploy
+          create_tags: false
+  # ----------------------------------------------------------
+  # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
+  # (NO main auto workflow on merge)
+  # ----------------------------------------------------------
+  Auto-BRInt-Deploy:
+    when:
+      and:
+        - equal: [ webhook, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+    jobs:
+      - deploy-intqa:
+          name: deploy-intqa
+          context: sf-intqa
+          tag_prefix: "RAVIDEV-"
+          operation: deploy
+          create_tags: true
+
+  Auto-BRStaging-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -387,7 +479,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRInt-deploy:
+  Manual-BRInt-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -401,7 +493,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-BRInt-validate:
+  Manual-BRInt-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -418,7 +510,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRStaging-deploy:
+  Manual-BRStaging-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -432,7 +524,7 @@ workflows:
           operation: deploy
           create_tags: true
 
-  manual-BRStaging-validate:
+  Manual-BRStaging-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -451,7 +543,7 @@ workflows:
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
   # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
-  manual-main-deploy:
+  Manual-main-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -462,7 +554,7 @@ workflows:
           name: deploy-main
           context: sf-prod
 
-  manual-main-validate:
+  Manual-main-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
