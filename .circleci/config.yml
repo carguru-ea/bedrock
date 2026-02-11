@@ -484,7 +484,6 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    # resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -517,7 +516,6 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    # resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -545,7 +543,6 @@ jobs:
           type: enum
           enum: [deploy, validate]
           default: deploy
-    # resource_class: xlarge
       docker:
         - image: cimg/node:20.10
       steps:
@@ -570,7 +567,6 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: deploy
-    # resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -595,7 +591,6 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: deploy
-    # resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
