@@ -256,7 +256,7 @@ commands:
 
             echo "🚀 Running << parameters.batch_job_name >> in PROD..."
 
-            cat > run_batch.apex <<'APEX'
+            cat > run_batch.apex \<<'APEX'
             Database.executeBatch(new Batch_Initiate_DataDictionary());
             APEX
 
