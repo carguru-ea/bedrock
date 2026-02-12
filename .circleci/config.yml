@@ -627,7 +627,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-            name: deploy-intqa-full-sync
+            name: deploy-BRInt-full-sync
             context: sf-intqa
             operation: deploy
 
@@ -639,7 +639,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - staginguat-full-sync:
-            name: deploy-staginguat-full-sync
+            name: deploy-BRStaging-full-sync
             context: sf-staging
             operation: deploy 
 
@@ -656,7 +656,7 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-            name: validate-intqa
+            name: validate-BRInt
             context: sf-intqa
             operation: validate
 
@@ -669,7 +669,7 @@ workflows:
 
     jobs:
         - staginguat-full-sync:
-            name: validate-staginguat
+            name: validate-BRStaging
             context: sf-staging
             operation: validate
   # ----------------------------------------------------------
@@ -683,7 +683,7 @@ workflows:
         - equal: [ BRInt , << pipeline.git.branch >> ]
     jobs:
         - auto-deploy-intqa:
-            name: auto-deploy-intqa
+            name: auto-deploy-BRInt
             context: sf-intqa
             tag_prefix: "INTQA-"
             operation: deploy
@@ -696,7 +696,7 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
         - auto-deploy-staging:
-            name: auto-deploy-staging
+            name: auto-deploy-BRStaging
             context: sf-staging
             tag_prefix: "STAGINGUAT-"
             operation: deploy
@@ -713,7 +713,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-            name: deploy-intqa-full-sync
+            name: deploy-BRInt-full-sync
             context: sf-intqa
             operation: deploy
     
@@ -725,7 +725,7 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-            name: validate-intqa
+            name: validate-BRInt
             context: sf-intqa
             operation: validate
 
@@ -740,7 +740,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - staginguat-full-sync:
-            name: deploy-staginguat-full-sync
+            name: deploy-BRStaging-full-sync
             context: sf-staging
             operation: deploy
 
@@ -752,7 +752,7 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - staginguat-full-sync:
-            name: validate-staginguat
+            name: validate-BRStaging
             context: sf-staging
             operation: validate
   # ----------------------------------------------------------
@@ -768,7 +768,7 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - prod-full-sync:
-            name: deploy-prod-full-sync
+            name: deploy-main-full-sync
             context: sf-prod
             operation: deploy
 
@@ -779,7 +779,7 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-        - main-full-sync:
+        - prod-full-sync:
             name: validate-main
             context: sf-prod
             operation: validate
