@@ -591,9 +591,6 @@ jobs:
             target_env: INTQA
         - run-full-sync:
             operation: << parameters.operation >>
-        - run-batch-job:
-                  batch_job_name: Batch_Initiate_DataDictionary
-                  operation: << parameters.operation >>
         - slack/notify:
             event: fail
             channel: $SLACK_DEFAULT_CHANNEL
