@@ -713,10 +713,10 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-          name: deploy-intqa-full-sync
-          context: sf-intqa
-          operation: deploy    
-
+            name: deploy-intqa-full-sync
+            context: sf-intqa
+            operation: deploy
+    
   Manual-BRInt-Validate:
     when:
       and:
@@ -725,9 +725,9 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-          name: validate-intqa-full-sync
-          context: sf-intqa
-          operation: validate
+            name: validate-intqa-full-sync
+            context: sf-intqa
+            operation: validate
 
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
