@@ -626,10 +626,10 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: deploy-intqa-full-sync
-          context: sf-intqa
-          operation: deploy
+        - intqa-full-sync:
+            name: deploy-intqa-full-sync
+            context: sf-intqa
+            operation: deploy
 
   scheduled-BRStaging-deploy:
     when:
@@ -638,10 +638,10 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: deploy-staginguat-full-sync
-          context: sf-staging
-          operation: deploy 
+        - staginguat-full-sync:
+            name: deploy-staginguat-full-sync
+            context: sf-staging
+            operation: deploy 
 
 
   # ----------------------------------------------------------
@@ -655,10 +655,10 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: validate-intqa-full-sync
-          context: sf-intqa
-          operation: validate
+        - intqa-full-sync:
+            name: validate-intqa-full-sync
+            context: sf-intqa
+            operation: validate
 
   scheduled-BRStaging-validate:
     when:
@@ -668,10 +668,10 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
 
     jobs:
-      - staginguat-full-sync:
-          name: validate-staginguat-full-sync
-          context: sf-staging
-          operation: validate
+        - staginguat-full-sync:
+            name: validate-staginguat-full-sync
+            context: sf-staging
+            operation: validate
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
@@ -682,12 +682,12 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRInt , << pipeline.git.branch >> ]
     jobs:
-      - auto-deploy-intqa:
-          name: auto-deploy-intqa
-          context: sf-intqa
-          tag_prefix: "INTQA-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-intqa:
+            name: auto-deploy-intqa
+            context: sf-intqa
+            tag_prefix: "INTQA-"
+            operation: deploy
+            create_tags: true
 
   Auto-BRStaging-Deploy:
     when:
@@ -695,12 +695,12 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
-      - auto-deploy-staging:
-          name: auto-deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-staging:
+            name: auto-deploy-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
@@ -739,10 +739,10 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: deploy-staginguat-full-sync
-          context: sf-staging
-          operation: deploy
+        - staginguat-full-sync:
+            name: deploy-staginguat-full-sync
+            context: sf-staging
+            operation: deploy
 
   Manual-BRStaging-Validate:
     when:
@@ -751,10 +751,10 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: validate-staginguat-full-sync
-          context: sf-staging
-          operation: validate
+        - staginguat-full-sync:
+            name: validate-staginguat-full-sync
+            context: sf-staging
+            operation: validate
   # ----------------------------------------------------------
   # MANUAL: main/prod (API only)
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
@@ -767,10 +767,10 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-full-sync:
-          name: deploy-main-full-sync
-          context: sf-prod
-          operation: deploy
+        - main-full-sync:
+            name: deploy-main-full-sync
+            context: sf-prod
+            operation: deploy
 
   Manual-main-Validate:
     when:
@@ -779,7 +779,7 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-full-sync:
-          name: validate-main-full-sync
-          context: sf-prod
-          operation: validate
+        - main-full-sync:
+            name: validate-main-full-sync
+            context: sf-prod
+            operation: validate
