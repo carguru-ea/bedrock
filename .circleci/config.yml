@@ -585,12 +585,12 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
   
-  main-full-sync:
+  prod-full-sync:
     parameters:
       operation:
         type: enum
         enum: [deploy, validate]
-        default: deploy
+        default: validate
     docker:
       - image: cimg/node:20.10
     steps:
@@ -767,8 +767,8 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-        - main-full-sync:
-            name: deploy-main-full-sync
+        - prod-full-sync:
+            name: deploy-prod-full-sync
             context: sf-prod
             operation: deploy
 
