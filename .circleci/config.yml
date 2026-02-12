@@ -368,12 +368,12 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
 
     jobs:
-      - validate-intqa:
-          name: validate-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: validate
-          create_tags: true
+        - validate-intqa:
+            name: validate-intqa
+            context: sf-intqa
+            tag_prefix: "RAVIDEV-"
+            operation: validate
+            create_tags: true
 
   Scheduled-BRStaging-Validate:
     when:
@@ -382,12 +382,12 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - validate-staging:
-          name: validate-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: validate
-          create_tags: true
+        - validate-staging:
+            name: validate-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: validate
+            create_tags: true
 
   Scheduled-main-Validate:
     when:
@@ -396,12 +396,12 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - validate-main:
-          name: validate-main
-          context: sf-main
-          tag_prefix: ""
-          operation: validate
-          create_tags: false
+        - validate-main:
+            name: validate-main
+            context: sf-main
+            tag_prefix: ""
+            operation: validate
+            create_tags: false
 
 
   Scheduled-BRInt-deploy:
@@ -412,12 +412,12 @@ workflows:
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
 
     jobs:
-      - deploy-intqa:
-          name: deploy-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
+        - deploy-intqa:
+            name: deploy-intqa
+            context: sf-intqa
+            tag_prefix: "RAVIDEV-"
+            operation: deploy
+            create_tags: true
 
   Scheduled-BRStaging-deploy:
     when:
@@ -426,12 +426,12 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-staging:
-          name: deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - deploy-staging:
+            name: deploy-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   Scheduled-main-deploy:
     when:
@@ -440,12 +440,12 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-main:
-          name: deploy-main
-          context: sf-main
-          tag_prefix: ""
-          operation: deploy
-          create_tags: false
+        - deploy-main:
+            name: deploy-main
+            context: sf-main
+            tag_prefix: ""
+            operation: deploy
+            create_tags: false
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
@@ -456,12 +456,12 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
     jobs:
-      - deploy-intqa:
-          name: deploy-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
+        - deploy-intqa:
+            name: deploy-intqa
+            context: sf-intqa
+            tag_prefix: "RAVIDEV-"
+            operation: deploy
+            create_tags: true
 
   Auto-BRStaging-Deploy:
     when:
@@ -469,12 +469,12 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
-      - deploy-staging:
-          name: deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - deploy-staging:
+            name: deploy-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
@@ -486,12 +486,12 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-intqa:
-          name: deploy-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
+        - deploy-intqa:
+            name: deploy-intqa
+            context: sf-intqa
+            tag_prefix: "RAVIDEV-"
+            operation: deploy
+            create_tags: true
 
   Manual-BRInt-Validate:
     when:
@@ -500,12 +500,12 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-intqa:
-          name: validate-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: validate
-          create_tags: false
+        - deploy-intqa:
+            name: validate-intqa
+            context: sf-intqa
+            tag_prefix: "RAVIDEV-"
+            operation: validate
+            create_tags: false
 
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
@@ -517,12 +517,12 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-staging:
-          name: deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - deploy-staging:
+            name: deploy-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   Manual-BRStaging-Validate:
     when:
@@ -531,12 +531,12 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-staging:
-          name: validate-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: validate
-          create_tags: false
+        - deploy-staging:
+            name: validate-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: validate
+            create_tags: false
 
   # ----------------------------------------------------------
   # MANUAL: main/prod (API only)
@@ -550,9 +550,9 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-deploy:
-          name: deploy-main
-          context: sf-prod
+        - main-deploy:
+            name: deploy-main
+            context: sf-prod
 
   Manual-main-Validate:
     when:
@@ -561,6 +561,6 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-validate:
-          name: validate-main
-          context: sf-prod
+        - main-validate:
+            name: validate-main
+            context: sf-prod
