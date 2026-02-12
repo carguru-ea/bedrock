@@ -236,27 +236,33 @@ commands:
                   --test-level RunLocalTests \
                   --wait 360
               fi
-  run-batch-job:
-      parameters:
-        batch_job_name:
-          type: string
-        operation:
-          type: enum
-          enum: [deploy, validate]
-          default: deploy
-      steps:
-        - run:
-            name: Run Batch Job << parameters.batch_job_name >>
-            command: |
-              if [ "<< parameters.operation >>" != "deploy" ]; then
-                echo "Not a deploy run (operation=<< parameters.operation >>). Skipping batch."
-                exit 0
-              fi
 
-              echo "🚀 Running << parameters.batch_job_name >> in PROD..."
-              sf apex run \
-                --target-org target \
-                --command "Database.executeBatch(new << parameters.batch_job_name >>());"
+  run-batch-job:
+    parameters:
+      batch_job_name:
+        type: string
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+    steps:
+      - run:
+          name: Run Batch Job << parameters.batch_job_name >>
+          command: |
+            if [ "<< parameters.operation >>" != "deploy" ]; then
+              echo "Not a deploy run (operation=<< parameters.operation >>). Skipping batch."
+              exit 0
+            fi
+
+            echo "🚀 Running << parameters.batch_job_name >> in PROD..."
+
+            cat > run_batch.apex \<<'APEX'
+            Database.executeBatch(new Batch_Initiate_DataDictionary());
+            APEX
+
+            sf apex run \
+              --target-org target \
+              --file run_batch.apex
   # ----------------------------------------------------------
   # DEPLOY/VALIDATE WITH TAGS + CANCEL ACTIVE DEPLOYS
   # operation: deploy | validate
@@ -576,29 +582,32 @@ jobs:
   # INTQA FULL SYNC - Validate or Deploy (Manual/API only - NO auto workflow)
   # ----------------------------------------------------------
   intqa-full-sync:
-      parameters:
-        operation:
-          type: enum
-          enum: [deploy, validate]
-          default: deploy
-      resource_class: large
-      docker:
-        - image: cimg/node:20.10
-      steps:
-        - checkout
-        - install-tooling
-        - jwt-auth:
-            target_env: INTQA
-        - run-full-sync:
-            operation: << parameters.operation >>
-        - slack/notify:
-            event: fail
-            channel: $SLACK_DEFAULT_CHANNEL
-            template: basic_fail_1
-        - slack/notify:
-            event: pass
-            channel: $SLACK_DEFAULT_CHANNEL
-            template: basic_success_1
+    parameters:
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+    resource_class: large
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - run-full-sync:
+          operation: << parameters.operation >>
+      - run-batch-job:
+                batch_job_name: Batch_Initiate_DataDictionary
+                operation: << parameters.operation >>
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
 
   # ----------------------------------------------------------
   # STAGING UAT FULL SYNC - Validate or Deploy (Manual/API only - NO auto workflow)
