@@ -619,7 +619,7 @@ workflows:
   # ----------------------------------------------------------
   # Scheduled: Nightly Full Sync to BRInt / BRStaging
   # ----------------------------------------------------------
-  scheduled-BRInt-deploy:
+  scheduled-IntQa-deploy:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -631,7 +631,7 @@ workflows:
             context: sf-intqa
             operation: deploy
 
-  scheduled-BRStaging-deploy:
+  scheduled-Staging-deploy:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -648,7 +648,7 @@ workflows:
   # Scheduled: Nightly Full Sync to BRInt / BRStaging -> Validate
   # ----------------------------------------------------------
 
-  scheduled-BRInt-validate:
+  scheduled-IntQa-validate:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -660,7 +660,7 @@ workflows:
             context: sf-intqa
             operation: validate
 
-  scheduled-BRStaging-validate:
+  scheduled-Staging-validate:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -676,7 +676,7 @@ workflows:
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
-  Auto-BRInt-Deploy:
+  Auto-IntQa-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -689,7 +689,7 @@ workflows:
             operation: deploy
             create_tags: true
 
-  Auto-BRStaging-Deploy:
+  Auto-Staging-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -705,7 +705,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
   # ----------------------------------------------------------
-  Manual-BRInt-Deploy:
+  Manual-IntQa-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -717,7 +717,7 @@ workflows:
             context: sf-intqa
             operation: deploy
     
-  Manual-BRInt-Validate:
+  Manual-IntQa-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -732,7 +732,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  Manual-BRStaging-Deploy:
+  Manual-Staging-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -760,7 +760,7 @@ workflows:
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
   # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
-  Manual-main-Deploy:
+  Manual-Prod-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -772,7 +772,7 @@ workflows:
             context: sf-prod
             operation: deploy
 
-  Manual-main-Validate:
+  Manual-Prod-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
