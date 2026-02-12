@@ -779,7 +779,7 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-        - main-full-sync:
+        - prod-full-sync:
             name: validate-main
             context: sf-prod
             operation: validate
