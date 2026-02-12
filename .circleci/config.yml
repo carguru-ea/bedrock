@@ -725,7 +725,7 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - intqa-full-sync:
-            name: validate-intqa-full-sync
+            name: validate-intqa
             context: sf-intqa
             operation: validate
 
@@ -752,7 +752,7 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - staginguat-full-sync:
-            name: validate-staginguat-full-sync
+            name: validate-staginguat
             context: sf-staging
             operation: validate
   # ----------------------------------------------------------
@@ -780,6 +780,6 @@ workflows:
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
         - main-full-sync:
-            name: validate-main-full-sync
+            name: validate-main
             context: sf-prod
             operation: validate
