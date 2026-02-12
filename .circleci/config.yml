@@ -29,6 +29,148 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
+  # ----------------------------------------------------------
+  # Find Test Classes from Gist Coverage Map
+  # ----------------------------------------------------------
+  
+  find-test-classes:
+    parameters:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Download Coverage Map from Gist
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            echo "🔍 Downloading test coverage map from Gist for << parameters.target_env >>..."
+            
+            # Get the appropriate Gist URL based on environment
+            if [ "<< parameters.target_env >>" = "INTQA" ]; then
+              GIST_URL="${TEST_COVERAGE_GIST_URL_INTQA}"
+            elif [ "<< parameters.target_env >>" = "STAGINGUAT" ]; then
+              GIST_URL="${TEST_COVERAGE_GIST_URL_STAGING}"
+            else
+              echo "❌ Unknown environment: << parameters.target_env >>"
+              exit 1
+            fi
+            
+            if [ -z "$GIST_URL" ]; then
+              echo "❌ Error: Gist URL not set for << parameters.target_env >>"
+              exit 1
+            fi
+            
+            # Download the gist with token authentication
+            if curl -H "Authorization: token ${GIST_TOKEN}" \
+              "$GIST_URL" \
+              -o coverage-map.json -f 2>/dev/null; then
+              
+              if [ -f "coverage-map.json" ] && [ -s "coverage-map.json" ]; then
+                echo "✅ Coverage map downloaded successfully"
+                echo "📊 File size: $(wc -c < coverage-map.json) bytes"
+                echo "export GIST_DOWNLOADED=true" >> $BASH_ENV
+              else
+                echo "❌ Failed to download coverage map - file is empty or missing"
+                exit 1
+              fi
+            else
+              echo "❌ Error downloading from Gist - HTTP request failed"
+              exit 1
+            fi
+
+      - run:
+          name: Determine Required Test Classes
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            # Extract changed Apex classes from files.txt
+            if [ -f "files.txt" ]; then
+              echo "🔍 Finding changed Apex classes..."
+              changed_classes=$(cat files.txt | grep -E '^force-app/.*classes/.*\.cls$' | grep -v '.*-meta\.xml$' | sed 's/.*classes\///' | sed 's/\.cls$//' || true)
+              
+              if [ -n "$changed_classes" ]; then
+                echo "📝 Changed Apex classes found:"
+                echo "$changed_classes"
+                echo "$changed_classes" > changed_classes.txt
+                echo "export APEX_CLASSES_CHANGED=true" >> $BASH_ENV
+              else
+                echo "ℹ️ No Apex classes changed"
+                echo "" > changed_classes.txt
+                echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
+              fi
+            else
+              echo "⚠️ files.txt not found"
+              echo "" > changed_classes.txt
+              echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
+            fi
+            
+            test_classes=""
+            
+            # PRONG 1: Look up changed classes in Gist coverage map
+            if [ "$GIST_DOWNLOADED" = "true" ] && [ -f "coverage-map.json" ] && [ -s "changed_classes.txt" ]; then
+              echo ""
+              echo "🔍 PRONG 1: Looking up test classes in coverage map..."
+              
+              while IFS= read -r class_name; do
+                if [ -z "$class_name" ]; then
+                  continue
+                fi
+                
+                # Check if this class is in the coverage map (new structure with .Tests array)
+                mapped_tests=$(jq -r ".coverage.\"$class_name\".Tests[]?" coverage-map.json 2>/dev/null || true)
+                
+                if [ -n "$mapped_tests" ]; then
+                  echo "  ✓ Found test classes for $class_name:"
+                  echo "$mapped_tests" | while read -r test; do
+                    echo "    - $test"
+                  done
+                  test_classes="$test_classes $mapped_tests"
+                else
+                  echo "  ⚠️ No coverage mapping found for $class_name"
+                fi
+              done < changed_classes.txt
+            fi
+            
+            # PRONG 2: Find classes with 'test' in the name from changed classes
+            if [ -s "changed_classes.txt" ]; then
+              echo ""
+              echo "🔍 PRONG 2: Scanning for classes with 'test' in the name..."
+              name_based_tests=$(cat changed_classes.txt | grep -i "test" || true)
+              
+              if [ -n "$name_based_tests" ]; then
+                echo "  ✓ Found test classes by name:"
+                echo "$name_based_tests" | while read -r test; do
+                  echo "    - $test"
+                done
+                test_classes="$test_classes $name_based_tests"
+              else
+                echo "  ℹ️ No test classes found by name"
+              fi
+            fi
+            
+            # Combine all sets, remove duplicates, and store
+            final_test_classes=$(echo "$test_classes" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//;s/ *$//')
+            
+            echo ""
+            echo "📋 Final test classes to run:"
+            if [ -n "$final_test_classes" ]; then
+              echo "$final_test_classes" | tr ' ' '\n' | while read -r test; do
+                if [ -n "$test" ]; then
+                  echo "  - $test"
+                fi
+              done
+              echo "export TEST_CLASSES='$final_test_classes'" >> $BASH_ENV
+            else
+              echo "  ⚠️ No test classes found"
+              echo "export TEST_CLASSES=''" >> $BASH_ENV
+            fi
+            
+            # Cleanup
+            rm -f coverage-map.json changed_classes.txt
+
   jwt-auth:
     parameters:
       target_env:
@@ -53,6 +195,42 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
+  # DEPLOY/VALIDATE FULL-SYNC MANIFEST
+  # ----------------------------------------------------------
+  run-full-sync:
+      parameters:
+        operation:
+          type: enum
+          enum: [deploy, validate]
+          default: deploy
+      steps:
+        - run:
+            name: Full Manifest
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+              sf project generate manifest --source-dir force-app > /dev/null
+
+        - run:
+            name: Full Sync << parameters.operation >>
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+
+              if [ "<< parameters.operation >>" = "validate" ]; then
+                sf project deploy validate \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                  --wait 360
+              else
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                  --wait 360
+              fi
+  # ----------------------------------------------------------
   # DEPLOY/VALIDATE WITH TAGS + CANCEL ACTIVE DEPLOYS
   # operation: deploy | validate
   # create_tags: true|false (tags only for deploy)
@@ -60,6 +238,8 @@ commands:
   deploy-with-tags:
     parameters:
       tag_prefix:
+        type: string
+      target_env:
         type: string
       operation:
         type: enum
@@ -78,7 +258,7 @@ commands:
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest
              WHERE Status IN ('Pending','PendingValidation','InProgress')
-             AND CreatedBy.Name = 'CircleCI API'
+             AND CreatedBy.Name = 'Deployment Automation'
              ORDER BY CreatedDate DESC" --json)
 
             echo "$ACTIVE_DEPLOYS" | jq .
@@ -133,43 +313,123 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
+              echo "Changes detected:"
+              cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
+              echo "No delta — full deploy required"
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+      # --------------------------------------------------------
+      # Find Test Classes from Gist
+      # --------------------------------------------------------
+      - find-test-classes:
+          target_env: << parameters.target_env >>
+
+      # --------------------------------------------------------
+      # Deploy (Delta or Full)
+      # --------------------------------------------------------
       - run:
-          name: Deploy / Validate Metadata
+          name: Deploy Metadata
           command: |
             source $BASH_ENV
-            OPERATION="<< parameters.operation >>"
 
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
-            if [ "$CHANGES_FOUND" != "true" ]; then
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+            echo "OPERATION=$OPERATION"
+            echo "APEX_CLASSES_CHANGED=$APEX_CLASSES_CHANGED"
+            echo "TEST_CLASSES=$TEST_CLASSES"
+
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "🔄 DELTA deploy"
+              DEPLOY_TYPE="DELTA"
+            else
+              if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+                DEPLOY_TYPE="FULL_FIRST_RUN"
+              else
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
+                DEPLOY_TYPE="FULL_NO_TAG"
+              fi
+
               sf project generate manifest --source-dir force-app > /dev/null
             fi
+            
+            # Determine test level based on what changed
+            source $BASH_ENV
 
-            if [ "$OPERATION" = "validate" ]; then
-              sf project deploy validate \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
+            if [ "$CHANGES_FOUND" = "true" ]; then
+              if [ "$APEX_CLASSES_CHANGED" = "true" ]; then
+                # Apex classes changed - we MUST have test classes
+                if [ -z "$TEST_CLASSES" ]; then
+                  echo "❌ ERROR: Apex classes were modified but no test classes were found"
+                  echo "⚠️ Cannot deploy Apex changes without running tests"
+                  exit 1
+                else
+                  echo "📋 Running deployment with specified test classes..."
+                  echo "Test classes: $TEST_CLASSES"
+                  
+                  # Build --tests flags for each test class
+                  test_args=""
+                  for test_class in $TEST_CLASSES; do
+                    test_args="$test_args --tests $test_class"
+                  done
+                  
+                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --wait 360"
+                  
+                  sf project deploy start \
+                    --manifest package.xml \
+                    --target-org target \
+                    --test-level RunSpecifiedTests \
+                    $test_args \
+                    --wait 360
+                fi
+              else
+                # No Apex classes changed - only metadata/config changes
+                echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
+                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --wait 360"
+                
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level NoTestRun \
+                  --wait 360
+              fi
             else
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level NoTestRun \
-                --wait 360
+              if [ "$OPERATION" = "validate" ]; then
+                sf project deploy validate \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                  --wait 360
+              else
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                # No Apex classes changed - only metadata/config changes
+                echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
+                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --wait 360"
+                
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level NoTestRun \
+                  --wait 360
+              fi
             fi
 
       - run:
@@ -213,7 +473,7 @@ commands:
 # JOBS
 # ============================================================
 jobs:
-  deploy-intqa:
+  auto-deploy-intqa:
     parameters:
       tag_prefix:
         type: string
@@ -233,6 +493,7 @@ jobs:
           target_env: INTQA
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          target_env: INTQA
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
       - slack/notify:
@@ -244,7 +505,7 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  deploy-staging:
+  auto-deploy-staging:
     parameters:
       tag_prefix:
         type: string
@@ -264,6 +525,7 @@ jobs:
           target_env: STAGINGUAT
       - deploy-with-tags:
           tag_prefix: << parameters.tag_prefix >>
+          target_env: STAGINGUAT
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
       - slack/notify:
@@ -275,10 +537,60 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  # ----------------------------------------------------------
-  # MAIN/PROD JOBS (unchanged)
-  # ----------------------------------------------------------
-  main-deploy:
+  intqa-full-sync:
+      parameters:
+        operation:
+          type: enum
+          enum: [deploy, validate]
+          default: deploy
+      docker:
+        - image: cimg/node:20.10
+      steps:
+        - checkout
+        - install-tooling
+        - jwt-auth:
+            target_env: INTQA
+        - run-full-sync:
+            operation: << parameters.operation >>
+        - slack/notify:
+            event: fail
+            channel: $SLACK_DEFAULT_CHANNEL
+            template: basic_fail_1
+        - slack/notify:
+            event: pass
+            channel: $SLACK_DEFAULT_CHANNEL
+            template: basic_success_1
+  
+  staginguat-full-sync:
+    parameters:
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: STAGINGUAT
+      - run-full-sync:
+          operation: << parameters.operation >>
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
+  
+  main-full-sync:
+    parameters:
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
     docker:
       - image: cimg/node:20.10
     steps:
@@ -286,22 +598,8 @@ jobs:
       - install-tooling
       - jwt-auth:
           target_env: PROD
-      - run:
-          name: Full Manifest (main)
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project generate manifest --source-dir force-app > /dev/null
-      - run:
-          name: Deploy (main - full sync)
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project deploy start \
-              --manifest package.xml \
-              --target-org target \
-              --test-level NoTestRun \
-              --wait 360
+      - run-full-sync:
+          operation: << parameters.operation >>
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -311,38 +609,6 @@ jobs:
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
 
-  main-validate:
-    docker:
-      - image: cimg/node:20.10
-    steps:
-      - checkout
-      - install-tooling
-      - jwt-auth:
-          target_env: PROD
-      - run:
-          name: Full Manifest (main validation)
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project generate manifest --source-dir force-app > /dev/null
-      - run:
-          name: Validate Only (main - dry run)
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project deploy validate \
-              --manifest package.xml \
-              --target-org target \
-              --test-level RunLocalTests \
-              --wait 360
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
 
 # ============================================================
 # WORKFLOWS
@@ -351,120 +617,169 @@ workflows:
   version: 2
 
   # ----------------------------------------------------------
+  # Scheduled: Nightly Full Sync to BRInt / BRStaging
+  # ----------------------------------------------------------
+  scheduled-BRInt-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+        - intqa-full-sync:
+            name: deploy-intqa-full-sync
+            context: sf-intqa
+            operation: deploy
+
+  scheduled-BRStaging-deploy:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ deploy, << pipeline.parameters.action_type >> ]
+    jobs:
+        - staginguat-full-sync:
+            name: deploy-staginguat-full-sync
+            context: sf-staging
+            operation: deploy 
+
+
+  # ----------------------------------------------------------
+  # Scheduled: Nightly Full Sync to BRInt / BRStaging -> Validate
+  # ----------------------------------------------------------
+
+  scheduled-BRInt-validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+    jobs:
+        - intqa-full-sync:
+            name: validate-intqa
+            context: sf-intqa
+            operation: validate
+
+  scheduled-BRStaging-validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ BRStaging, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+
+    jobs:
+        - staginguat-full-sync:
+            name: validate-staginguat
+            context: sf-staging
+            operation: validate
+  # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
   # (NO main auto workflow on merge)
   # ----------------------------------------------------------
-  auto-BRInt-deploy:
+  Auto-BRInt-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
-        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ BRInt , << pipeline.git.branch >> ]
     jobs:
-      - deploy-intqa:
-          name: deploy-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-intqa:
+            name: auto-deploy-intqa
+            context: sf-intqa
+            tag_prefix: "INTQA-"
+            operation: deploy
+            create_tags: true
 
-  auto-BRStaging-deploy:
+  Auto-BRStaging-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
-      - deploy-staging:
-          name: deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-staging:
+            name: auto-deploy-staging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   # ----------------------------------------------------------
   # MANUAL: BRInt deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRInt-deploy:
+  Manual-BRInt-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-intqa:
-          name: deploy-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: deploy
-          create_tags: true
-
-  manual-BRInt-validate:
+        - intqa-full-sync:
+            name: deploy-intqa-full-sync
+            context: sf-intqa
+            operation: deploy
+    
+  Manual-BRInt-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-intqa:
-          name: validate-intqa
-          context: sf-intqa
-          tag_prefix: "RAVIDEV-"
-          operation: validate
-          create_tags: false
+        - intqa-full-sync:
+            name: validate-intqa
+            context: sf-intqa
+            operation: validate
 
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  manual-BRStaging-deploy:
+  Manual-BRStaging-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-staging:
-          name: deploy-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - staginguat-full-sync:
+            name: deploy-staginguat-full-sync
+            context: sf-staging
+            operation: deploy
 
-  manual-BRStaging-validate:
+  Manual-BRStaging-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - deploy-staging:
-          name: validate-staging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: validate
-          create_tags: false
-
+        - staginguat-full-sync:
+            name: validate-staginguat
+            context: sf-staging
+            operation: validate
   # ----------------------------------------------------------
   # MANUAL: main/prod (API only)
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
   # - Run deploy or validate manually by passing action_type
   # ----------------------------------------------------------
-  manual-main-deploy:
+  Manual-main-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-deploy:
-          name: deploy-main
-          context: sf-prod
+        - main-full-sync:
+            name: deploy-main-full-sync
+            context: sf-prod
+            operation: deploy
 
-  manual-main-validate:
+  Manual-main-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - main-validate:
-          name: validate-main
-          context: sf-prod
+        - main-full-sync:
+            name: validate-main
+            context: sf-prod
+            operation: validate
