@@ -237,6 +237,11 @@ commands:
                   --wait 360
               fi
 
+  
+  # ----------------------------------------------------------
+  # RUN BATCH JOB ( Pass in batch_job_name and operation (deploy or validate) ) 
+  # - Only runs if operation=deploy (skips if validate)
+  # ----------------------------------------------------------
   run-batch-job:
     parameters:
       batch_job_name:
@@ -582,29 +587,32 @@ jobs:
   # INTQA FULL SYNC - Validate or Deploy (Manual/API only - NO auto workflow)
   # ----------------------------------------------------------
   intqa-full-sync:
-      parameters:
-        operation:
-          type: enum
-          enum: [deploy, validate]
-          default: deploy
-      resource_class: large
-      docker:
-        - image: cimg/node:20.10
-      steps:
-        - checkout
-        - install-tooling
-        - jwt-auth:
-            target_env: INTQA
-        - run-full-sync:
-            operation: << parameters.operation >>
-        - slack/notify:
-            event: fail
-            channel: $SLACK_DEFAULT_CHANNEL
-            template: basic_fail_1
-        - slack/notify:
-            event: pass
-            channel: $SLACK_DEFAULT_CHANNEL
-            template: basic_success_1
+    parameters:
+      operation:
+        type: enum
+        enum: [deploy, validate]
+        default: deploy
+    resource_class: large
+    docker:
+      - image: cimg/node:20.10
+    steps:
+      - checkout
+      - install-tooling
+      - jwt-auth:
+          target_env: INTQA
+      - run-full-sync:
+          operation: << parameters.operation >>
+      - run-batch-job:
+                batch_job_name: Batch_Initiate_DataDictionary
+                operation: << parameters.operation >>
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_fail_1
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          template: basic_success_1
 
   # ----------------------------------------------------------
   # STAGING UAT FULL SYNC - Validate or Deploy (Manual/API only - NO auto workflow)
@@ -727,6 +735,19 @@ workflows:
         - staginguat-full-sync:
             name: validate-BRStaging
             context: sf-staging
+            operation: validate
+
+  scheduled-Prod-validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+
+    jobs:
+        - prod-full-sync:
+            name: validate-main
+            context: sf-prod
             operation: validate
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
