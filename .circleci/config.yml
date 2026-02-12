@@ -631,7 +631,7 @@ workflows:
             context: sf-intqa
             operation: deploy
 
-  scheduled-Staging-deploy:
+  scheduled-StagingUat-deploy:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -660,7 +660,7 @@ workflows:
             context: sf-intqa
             operation: validate
 
-  scheduled-Staging-validate:
+  scheduled-StagingUat-validate:
     when:
       and:
         - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
@@ -689,7 +689,7 @@ workflows:
             operation: deploy
             create_tags: true
 
-  Auto-Staging-Deploy:
+  Auto-StagingUat-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
@@ -732,7 +732,7 @@ workflows:
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
   # ----------------------------------------------------------
-  Manual-Staging-Deploy:
+  Manual-StagingUat-Deploy:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
@@ -744,7 +744,7 @@ workflows:
             context: sf-staging
             operation: deploy
 
-  Manual-BRStaging-Validate:
+  Manual-StagingUat-Validate:
     when:
       and:
         - equal: [ api, << pipeline.trigger_source >> ]
