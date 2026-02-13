@@ -230,11 +230,18 @@ commands:
                   --test-level RunLocalTests \
                   --wait 360
               else
-                sf project deploy start \
+                DEPLOY_JSON= $(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
                   --test-level RunLocalTests \
-                  --wait 360
+                  --wait 360 \
+                  --async \
+                  --json )
+               DEPLOY_ID=$(echo "$DEPLOY_JSON" | jq -r '.result.id')
+               echo ":white_check_mark: Deploy started async. Job ID: $DEPLOY_ID"
+
+               sf project deploy resume --job-id "$DEPLOY_ID" --wait 360
+               
               fi
 
   run-batch-job:
