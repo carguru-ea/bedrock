@@ -475,6 +475,12 @@ commands:
                     TEST_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal     // .result.response.numberTestsTotal     // 0')
                   
                     echo "🕒 $(date) status=$STATUS | components=$COMP_DONE/$COMP_TOTAL | tests=$TEST_DONE/$TEST_TOTAL"
+
+                    echo "$REPORT_JSON" | jq -r '
+                      (.result.details.componentFailures // .result.response.details.componentFailures // [])
+                      | (if type=="array" then . else [.] end)
+                      | .[-5:][]?
+                      | "⚠️ " + (.fullName // "unknown") + " (" + (.componentType // "unknown") + "): " + (.problem // .problemType // "unknown")'
                   
                     if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "SucceededPartial" ]; then
                       echo "🎉 Deploy finished successfully"
