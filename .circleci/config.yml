@@ -122,8 +122,11 @@ commands:
                   continue
                 fi
                 
+                # Strip folder prefix if present (e.g., Dialpad1800/ClassName -> ClassName)
+                class_name_only=$(echo "$class_name" | sed 's|.*/||')
+                
                 # Check if this class is in the coverage map (new structure with .Tests array)
-                mapped_tests=$(jq -r ".coverage.\"$class_name\".Tests[]?" coverage-map.json 2>/dev/null || true)
+                mapped_tests=$(jq -r ".coverage.\"$class_name_only\".Tests[]?" coverage-map.json 2>/dev/null || true)
                 
                 if [ -n "$mapped_tests" ]; then
                   echo "  ✓ Found test classes for $class_name:"
@@ -141,7 +144,7 @@ commands:
             if [ -s "changed_classes.txt" ]; then
               echo ""
               echo "🔍 PRONG 2: Scanning for classes with 'test' in the name..."
-              name_based_tests=$(cat changed_classes.txt | grep -i "test" || true)
+              name_based_tests=$(cat changed_classes.txt | grep -i "test" | sed 's|.*/||' || true)
               
               if [ -n "$name_based_tests" ]; then
                 echo "  ✓ Found test classes by name:"
@@ -151,6 +154,23 @@ commands:
                 test_classes="$test_classes $name_based_tests"
               else
                 echo "  ℹ️ No test classes found by name"
+              fi
+            fi
+            
+            # PRONG 3: Scan package.xml for ALL test classes being deployed
+            if [ -f "package.xml" ]; then
+              echo ""
+              echo "🔍 PRONG 3: Scanning package.xml for test classes..."
+              package_tests=$(grep -oP '<members>\K[^<]+(?=</members>)' package.xml | grep -i "test" || true)
+              
+              if [ -n "$package_tests" ]; then
+                echo "  ✓ Found test classes in package.xml:"
+                echo "$package_tests" | while read -r test; do
+                  echo "    - $test"
+                done
+                test_classes="$test_classes $package_tests"
+              else
+                echo "  ℹ️ No test classes found in package.xml"
               fi
             fi
             
@@ -204,58 +224,44 @@ commands:
   # DEPLOY/VALIDATE FULL-SYNC MANIFEST
   # ----------------------------------------------------------
   run-full-sync:
-    parameters:
-      operation:
-        type: enum
-        enum: [deploy, validate]
-        default: deploy
-    steps:
-      - run:
-          name: Full Manifest
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project generate manifest --source-dir force-app > /dev/null
-  
-      - run:
-          name: Full Sync << parameters.operation >>
-          command: |
-            set -e
-  
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-  
-            if [ "<< parameters.operation >>" = "validate" ]; then
-              sf project deploy validate \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 360
-            else
-              DEPLOY_JSON=$(sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level RunLocalTests \
-                --wait 0 \
-                --async \
-                --json)
-  
-              echo "$DEPLOY_JSON" | jq .
-  
-              DEPLOY_ID=$(echo "$DEPLOY_JSON" | jq -r '.result.id')
-  
-              if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
-                echo "❌ Could not capture deploy job id."
-                exit 1
-              fi
-  
-              echo "✅ Deploy started async. Job ID: $DEPLOY_ID"
-  
-              sf project deploy resume \
-                --job-id "$DEPLOY_ID" \
-                --wait 360
-            fi
+      parameters:
+        operation:
+          type: enum
+          enum: [deploy, validate]
+          default: deploy
+      steps:
+        - run:
+            name: Full Manifest
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+              sf project generate manifest --source-dir force-app > /dev/null
 
+        - run:
+            name: Full Sync << parameters.operation >>
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+
+              if [ "<< parameters.operation >>" = "validate" ]; then
+                sf project deploy validate \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                  --wait 360
+              else
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level RunLocalTests \
+                  --wait 360
+              fi
+
+  
+  # ----------------------------------------------------------
+  # RUN BATCH JOB ( Pass in batch_job_name and operation (deploy or validate) ) 
+  # - Only runs if operation=deploy (skips if validate)
+  # ----------------------------------------------------------
   run-batch-job:
     parameters:
       batch_job_name:
@@ -378,7 +384,7 @@ commands:
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No delta — full deploy required"
+              echo "No changes since last tag - Manifest not required."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
@@ -450,28 +456,6 @@ commands:
                     --wait 360
                 fi
               else
-                # No Apex classes changed - only metadata/config changes
-                echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
-                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --wait 360"
-                
-                sf project deploy start \
-                  --manifest package.xml \
-                  --target-org target \
-                  --test-level NoTestRun \
-                  --wait 360
-              fi
-            else
-              if [ "$OPERATION" = "validate" ]; then
-                sf project deploy validate \
-                  --manifest package.xml \
-                  --target-org target \
-                  --test-level RunLocalTests \
-                  --wait 360
-              else
-                sf project deploy start \
-                  --manifest package.xml \
-                  --target-org target \
-                  --test-level RunLocalTests \
                 # No Apex classes changed - only metadata/config changes
                 echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
                 echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --wait 360"
@@ -749,6 +733,19 @@ workflows:
         - staginguat-full-sync:
             name: validate-BRStaging
             context: sf-staging
+            operation: validate
+
+  scheduled-Prod-validate:
+    when:
+      and:
+        - equal: [ scheduled_pipeline, << pipeline.trigger_source >> ]
+        - equal: [ main, << pipeline.git.branch >> ]
+        - equal: [ validate, << pipeline.parameters.action_type >> ]
+
+    jobs:
+        - prod-full-sync:
+            name: validate-main
+            context: sf-prod
             operation: validate
   # ----------------------------------------------------------
   # AUTO: PR merge to BRInt / BRStaging -> deploy + tags
