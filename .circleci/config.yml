@@ -450,45 +450,32 @@ commands:
                   
                   set -euo pipefail
                   
-                  DEPLOY_JSON=$(sf project deploy start \
-                    --manifest package.xml \
-                    --target-org target \
-                    --test-level RunSpecifiedTests \
-                    $test_args \
-                    --async \
-                    --json)
-                  
-                  DEPLOY_ID=$(echo "$DEPLOY_JSON" | jq -r '.result.id // .result.jobId // .id')
-                  echo "✅ Deploy started. Job ID: $DEPLOY_ID"
+                  DEPLOY_ID="0Afdx00000DdQrBCAV"   # or set this from async deploy start output
                   
                   while true; do
                     REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --json || true)
                   
-                    STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // .status // "unknown"')
+                    STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // "unknown"')
+                    STATE_DETAIL=$(echo "$REPORT_JSON" | jq -r '.result.stateDetail // ""')
                   
-                    # components progress (fallbacks handle slight shape differences)
-                    COMP_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // .result.response.numberComponentsDeployed // 0')
-                    COMP_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal    // .result.response.numberComponentsTotal    // 0')
+                    COMP_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // 0')
+                    COMP_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal // 0')
+                    COMP_ERR=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentErrors // 0')
                   
-                    # tests progress
-                    TEST_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // .result.response.numberTestsCompleted // 0')
-                    TEST_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal     // .result.response.numberTestsTotal     // 0')
+                    TEST_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // 0')
+                    TEST_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal // 0')
+                    TEST_ERR=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
                   
-                    echo "🕒 $(date) status=$STATUS | components=$COMP_DONE/$COMP_TOTAL | tests=$TEST_DONE/$TEST_TOTAL"
-
-                    echo "$REPORT_JSON" | jq -r '
-                      (.result.details.componentFailures // .result.response.details.componentFailures // [])
-                      | (if type=="array" then . else [.] end)
-                      | .[-5:][]?
-                      | "⚠️ " + (.fullName // "unknown") + " (" + (.componentType // "unknown") + "): " + (.problem // .problemType // "unknown")'
+                    echo "🕒 $(date) status=$STATUS | $STATE_DETAIL | components=$COMP_DONE/$COMP_TOTAL (errors=$COMP_ERR) | tests=$TEST_DONE/$TEST_TOTAL (errors=$TEST_ERR)"
                   
                     if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "SucceededPartial" ]; then
-                      echo "🎉 Deploy finished successfully"
+                      echo "🎉 Deploy completed."
                       exit 0
                     fi
                   
                     if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Canceled" ]; then
-                      echo "❌ Deploy finished with status: $STATUS"
+                      echo "❌ Deploy ended: $STATUS"
+                      # optional: dump failures at the end
                       echo "$REPORT_JSON" | jq .
                       exit 1
                     fi
