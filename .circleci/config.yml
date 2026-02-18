@@ -448,12 +448,47 @@ commands:
                   
                   echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --wait 360"
                   
-                  sf project deploy start \
+                  set -euo pipefail
+                  
+                  DEPLOY_JSON=$(sf project deploy start \
                     --manifest package.xml \
                     --target-org target \
                     --test-level RunSpecifiedTests \
                     $test_args \
-                    --wait 360
+                    --async \
+                    --json)
+                  
+                  DEPLOY_ID=$(echo "$DEPLOY_JSON" | jq -r '.result.id // .result.jobId // .id')
+                  echo "✅ Deploy started. Job ID: $DEPLOY_ID"
+                  
+                  while true; do
+                    REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --json || true)
+                  
+                    STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // .status // "unknown"')
+                  
+                    # components progress (fallbacks handle slight shape differences)
+                    COMP_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // .result.response.numberComponentsDeployed // 0')
+                    COMP_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal    // .result.response.numberComponentsTotal    // 0')
+                  
+                    # tests progress
+                    TEST_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // .result.response.numberTestsCompleted // 0')
+                    TEST_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal     // .result.response.numberTestsTotal     // 0')
+                  
+                    echo "🕒 $(date) status=$STATUS | components=$COMP_DONE/$COMP_TOTAL | tests=$TEST_DONE/$TEST_TOTAL"
+                  
+                    if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "SucceededPartial" ]; then
+                      echo "🎉 Deploy finished successfully"
+                      exit 0
+                    fi
+                  
+                    if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Canceled" ]; then
+                      echo "❌ Deploy finished with status: $STATUS"
+                      echo "$REPORT_JSON" | jq .
+                      exit 1
+                    fi
+                  
+                    sleep 300
+                  done
                 fi
               else
                 # No Apex classes changed - only metadata/config changes
