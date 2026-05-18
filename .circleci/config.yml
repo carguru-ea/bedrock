@@ -14,6 +14,14 @@ parameters:
       - validate
       - deploy
     default: validate
+  test_level:                          
+    type: enum
+    enum:
+      - RunLocalTests
+      - RunAllTestsInOrg
+      - NoTestRun
+      - RunSpecifiedTests
+    default: RunLocalTests
 
 # ============================================================
 # COMMANDS
@@ -32,167 +40,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # Find Test Classes from Gist Coverage Map
-  # ----------------------------------------------------------
-  
-  find-test-classes:
-    parameters:
-      target_env:
-        type: string
-    steps:
-      - run:
-          name: Download Coverage Map from Gist
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            
-            echo "🔍 Downloading test coverage map from Gist for << parameters.target_env >>..."
-            
-            # Get the appropriate Gist URL based on environment
-            if [ "<< parameters.target_env >>" = "INTQA" ]; then
-              GIST_URL="${TEST_COVERAGE_GIST_URL_INTQA}"
-            elif [ "<< parameters.target_env >>" = "STAGINGUAT" ]; then
-              GIST_URL="${TEST_COVERAGE_GIST_URL_STAGING}"
-            else
-              echo "❌ Unknown environment: << parameters.target_env >>"
-              exit 1
-            fi
-            
-            if [ -z "$GIST_URL" ]; then
-              echo "❌ Error: Gist URL not set for << parameters.target_env >>"
-              exit 1
-            fi
-            
-            # Download the gist with token authentication
-            if curl -H "Authorization: token ${GIST_TOKEN}" \
-              "$GIST_URL" \
-              -o coverage-map.json -f 2>/dev/null; then
-              
-              if [ -f "coverage-map.json" ] && [ -s "coverage-map.json" ]; then
-                echo "✅ Coverage map downloaded successfully"
-                echo "📊 File size: $(wc -c < coverage-map.json) bytes"
-                echo "export GIST_DOWNLOADED=true" >> $BASH_ENV
-              else
-                echo "❌ Failed to download coverage map - file is empty or missing"
-                exit 1
-              fi
-            else
-              echo "❌ Error downloading from Gist - HTTP request failed"
-              exit 1
-            fi
-
-      - run:
-          name: Determine Required Test Classes
-          command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            
-            # Extract changed Apex classes from files.txt
-            if [ -f "files.txt" ]; then
-              echo "🔍 Finding changed Apex classes..."
-              changed_classes=$(cat files.txt | grep -E '^force-app/.*classes/.*\.cls$' | grep -v '.*-meta\.xml$' | sed 's/.*classes\///' | sed 's/\.cls$//' || true)
-              
-              if [ -n "$changed_classes" ]; then
-                echo "📝 Changed Apex classes found:"
-                echo "$changed_classes"
-                echo "$changed_classes" > changed_classes.txt
-                echo "export APEX_CLASSES_CHANGED=true" >> $BASH_ENV
-              else
-                echo "ℹ️ No Apex classes changed"
-                echo "" > changed_classes.txt
-                echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
-              fi
-            else
-              echo "⚠️ files.txt not found"
-              echo "" > changed_classes.txt
-              echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
-            fi
-            
-            test_classes=""
-            
-            # PRONG 1: Look up changed classes in Gist coverage map
-            if [ "$GIST_DOWNLOADED" = "true" ] && [ -f "coverage-map.json" ] && [ -s "changed_classes.txt" ]; then
-              echo ""
-              echo "🔍 PRONG 1: Looking up test classes in coverage map..."
-              
-              while IFS= read -r class_name; do
-                if [ -z "$class_name" ]; then
-                  continue
-                fi
-                
-                # Strip folder prefix if present (e.g., Dialpad1800/ClassName -> ClassName)
-                class_name_only=$(echo "$class_name" | sed 's|.*/||')
-                
-                # Check if this class is in the coverage map (new structure with .Tests array)
-                mapped_tests=$(jq -r ".coverage.\"$class_name_only\".Tests[]?" coverage-map.json 2>/dev/null || true)
-                
-                if [ -n "$mapped_tests" ]; then
-                  echo "  ✓ Found test classes for $class_name:"
-                  echo "$mapped_tests" | while read -r test; do
-                    echo "    - $test"
-                  done
-                  test_classes="$test_classes $mapped_tests"
-                else
-                  echo "  ⚠️ No coverage mapping found for $class_name"
-                fi
-              done < changed_classes.txt
-            fi
-            
-            # PRONG 2: Find classes with 'test' in the name from changed classes
-            if [ -s "changed_classes.txt" ]; then
-              echo ""
-              echo "🔍 PRONG 2: Scanning for classes with 'test' in the name..."
-              name_based_tests=$(cat changed_classes.txt | grep -i "test" | sed 's|.*/||' || true)
-              
-              if [ -n "$name_based_tests" ]; then
-                echo "  ✓ Found test classes by name:"
-                echo "$name_based_tests" | while read -r test; do
-                  echo "    - $test"
-                done
-                test_classes="$test_classes $name_based_tests"
-              else
-                echo "  ℹ️ No test classes found by name"
-              fi
-            fi
-            
-            # PRONG 3: Scan package.xml for ALL test classes being deployed
-            if [ -f "package.xml" ]; then
-              echo ""
-              echo "🔍 PRONG 3: Scanning package.xml for test classes..."
-              package_tests=$(grep -oP '<members>\K[^<]+(?=</members>)' package.xml | grep -i "test" || true)
-              
-              if [ -n "$package_tests" ]; then
-                echo "  ✓ Found test classes in package.xml:"
-                echo "$package_tests" | while read -r test; do
-                  echo "    - $test"
-                done
-                test_classes="$test_classes $package_tests"
-              else
-                echo "  ℹ️ No test classes found in package.xml"
-              fi
-            fi
-            
-            # Combine all sets, remove duplicates, and store
-            final_test_classes=$(echo "$test_classes" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//;s/ *$//')
-            
-            echo ""
-            echo "📋 Final test classes to run:"
-            if [ -n "$final_test_classes" ]; then
-              echo "$final_test_classes" | tr ' ' '\n' | while read -r test; do
-                if [ -n "$test" ]; then
-                  echo "  - $test"
-                fi
-              done
-              echo "export TEST_CLASSES='$final_test_classes'" >> $BASH_ENV
-            else
-              echo "  ⚠️ No test classes found"
-              echo "export TEST_CLASSES=''" >> $BASH_ENV
-            fi
-            
-            # Cleanup
-            rm -f coverage-map.json changed_classes.txt
 
   # ----------------------------------------------------------
   # JWT AUTH COMMAND : Authenticate to Salesforce using JWT for the specified target environment
@@ -222,6 +69,7 @@ commands:
 
   # ----------------------------------------------------------
   # DEPLOY/VALIDATE FULL-SYNC MANIFEST
+  # run_all_tests is read directly from pipeline.parameters — no job/command param needed
   # ----------------------------------------------------------
   run-full-sync:
       parameters:
@@ -229,6 +77,10 @@ commands:
           type: enum
           enum: [deploy, validate]
           default: deploy
+        test_level:                     
+          type: enum
+          enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
+          default: RunLocalTests
       steps:
         - run:
             name: Full Manifest
@@ -247,13 +99,13 @@ commands:
                 sf project deploy validate \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level << parameters.test_level >> \
                   --wait 360
               else
                 sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level << parameters.test_level >> \
                   --wait 360
               fi
 
@@ -316,7 +168,7 @@ commands:
             "SELECT Id, Status, CreatedDate, NumberComponentsDeployed, NumberComponentsTotal
              FROM DeployRequest
              WHERE Status IN ('Pending','PendingValidation','InProgress')
-             AND CreatedBy.Name = 'Deployment Automation'
+             AND CreatedBy.Name = 'CircleCI API'
              ORDER BY CreatedDate DESC" --json)
 
             echo "$ACTIVE_DEPLOYS" | jq .
@@ -388,11 +240,6 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Find Test Classes from Gist
-      # --------------------------------------------------------
-      - find-test-classes:
-          target_env: << parameters.target_env >>
 
       # --------------------------------------------------------
       # Deploy (Delta or Full)
@@ -446,55 +293,183 @@ commands:
                     test_args="$test_args --tests $test_class"
                   done
                   
-                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --wait 360"
+                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --async"
                   
-                  set -euo pipefail
+                  DEPLOY_OUTPUT=$(sf project deploy start \
+                    --manifest package.xml \
+                    --target-org target \
+                    --test-level RunSpecifiedTests \
+                    $test_args \
+                    --async 2>&1)
                   
-                  DEPLOY_ID="0Afdx00000DdQrBCAV"   # or set this from async deploy start output
+                  echo "$DEPLOY_OUTPUT"
                   
-                  while true; do
-                    REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --json || true)
+                  # Extract Deploy ID from output (take first match only)
+                  DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
                   
-                    STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // "unknown"')
-                    STATE_DETAIL=$(echo "$REPORT_JSON" | jq -r '.result.stateDetail // ""')
+                  if [ -z "$DEPLOY_ID" ]; then
+                    echo "❌ ERROR: Failed to extract Deploy ID from output"
+                    exit 1
+                  fi
                   
-                    COMP_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // 0')
-                    COMP_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal // 0')
-                    COMP_ERR=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentErrors // 0')
-                  
-                    TEST_DONE=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // 0')
-                    TEST_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal // 0')
-                    TEST_ERR=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
-                  
-                    echo "🕒 $(date) status=$STATUS | $STATE_DETAIL | components=$COMP_DONE/$COMP_TOTAL (errors=$COMP_ERR) | tests=$TEST_DONE/$TEST_TOTAL (errors=$TEST_ERR)"
-                  
-                    if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "SucceededPartial" ]; then
-                      echo "🎉 Deploy completed."
-                      exit 0
-                    fi
-                  
-                    if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Canceled" ]; then
-                      echo "❌ Deploy ended: $STATUS"
-                      # optional: dump failures at the end
-                      echo "$REPORT_JSON" | jq .
-                      exit 1
-                    fi
-                  
-                    sleep 300
-                  done
+                  echo "📝 Deploy ID: $DEPLOY_ID"
+                  echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
                 fi
               else
                 # No Apex classes changed - only metadata/config changes
                 echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
-                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --wait 360"
+                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --async"
                 
-                sf project deploy start \
+                DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
                   --test-level NoTestRun \
-                  --wait 360
+                  --async 2>&1)
+                
+                echo "$DEPLOY_OUTPUT"
+                
+                # Extract Deploy ID from output (take first match only)
+                DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
+                
+                if [ -z "$DEPLOY_ID" ]; then
+                  echo "❌ ERROR: Failed to extract Deploy ID from output"
+                  exit 1
+                fi
+                
+                echo "📝 Deploy ID: $DEPLOY_ID"
+                echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
               fi
             fi
+
+      # --------------------------------------------------------
+      # Poll Deployment Status
+      # --------------------------------------------------------
+      - run:
+          name: Poll Deployment Status
+          command: |
+            source $BASH_ENV
+            
+            if [ -z "$DEPLOY_ID" ]; then
+              echo "⚠️ No deployment to poll (DEPLOY_ID not set)"
+              exit 0
+            fi
+            
+            # Change to project directory
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "❌ ERROR: Could not find sfdx-project.json"
+              exit 1
+            fi
+            cd "$PROJECT_DIR"
+            
+            echo "📊 Polling deployment: $DEPLOY_ID"
+            echo "⏱️  Timeout: 120 minutes"
+            echo ""
+            
+            TIMEOUT_MINUTES=120
+            TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+            POLL_INTERVAL=30
+            ELAPSED=0
+            
+            while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
+              # Get deployment status
+              REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --target-org target --json 2>&1)
+              
+              if [ $? -ne 0 ]; then
+                echo "❌ Error getting deployment status:"
+                echo "$REPORT_JSON"
+                exit 1
+              fi
+              
+              # Parse key fields
+              STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // "Unknown"')
+              DONE=$(echo "$REPORT_JSON" | jq -r '.result.done // false')
+              SUCCESS=$(echo "$REPORT_JSON" | jq -r '.result.success // false')
+              COMPONENTS_DEPLOYED=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // 0')
+              COMPONENTS_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal // 0')
+              TESTS_COMPLETED=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // 0')
+              TESTS_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal // 0')
+              RUN_TESTS_ENABLED=$(echo "$REPORT_JSON" | jq -r '.result.runTestsEnabled // false')
+              
+              # Display current status
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "⏱️  Elapsed: $((ELAPSED / 60)) min | Status: $STATUS"
+              echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
+              
+              # Show test progress if tests are running
+              if [ "$RUN_TESTS_ENABLED" = "true" ] && [ $COMPONENTS_DEPLOYED -eq $COMPONENTS_TOTAL ] && [ $COMPONENTS_TOTAL -gt 0 ]; then
+                echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
+              fi
+              
+              # Check if deployment is complete
+              if [ "$DONE" = "true" ]; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                
+                if [ "$SUCCESS" = "true" ]; then
+                  echo "✅ Deployment completed successfully!"
+                  exit 0
+                else
+                  echo "❌ Deployment failed!"
+                  echo ""
+                  
+                  # Show component failures if any
+                  COMPONENT_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' 2>/dev/null)
+                  if [ -n "$COMPONENT_FAILURES" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 COMPONENT ERRORS:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$COMPONENT_FAILURES"
+                    echo ""
+                  fi
+                  
+                  # Show test failures if any
+                  TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName):\n     \(.message)\n     \(.stackTrace // "No stack trace")"' 2>/dev/null)
+                  if [ -n "$TEST_FAILURES" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 TEST FAILURES:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$TEST_FAILURES"
+                    echo ""
+                  fi
+                  
+                  # Show code coverage failures if any
+                  COVERAGE_WARNINGS=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' 2>/dev/null)
+                  if [ -n "$COVERAGE_WARNINGS" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 CODE COVERAGE FAILURES:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$COVERAGE_WARNINGS"
+                    echo ""
+                  fi
+                  
+                  # Show summary
+                  TOTAL_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentErrors // 0')
+                  TOTAL_TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
+                  
+                  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                  echo "📊 FAILURE SUMMARY:"
+                  echo "   Component Errors: $TOTAL_FAILURES"
+                  echo "   Test Failures: $TOTAL_TEST_FAILURES"
+                  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                  
+                  exit 1
+                fi
+              fi
+              
+              # Wait before next poll
+              sleep $POLL_INTERVAL
+              ELAPSED=$((ELAPSED + POLL_INTERVAL))
+            done
+            
+            # Timeout reached
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⏱️  Deployment timeout reached after $TIMEOUT_MINUTES minutes"
+            echo "📊 Last known status: $STATUS"
+            echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
+            if [ "$RUN_TESTS_ENABLED" = "true" ]; then
+              echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
+            fi
+            exit 1
 
       - run:
           name: Create & Push Tag
@@ -551,7 +526,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -587,7 +562,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -618,7 +593,11 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: deploy
-    resource_class: large
+      test_level:                  
+        type: enum
+        enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
+        default: RunLocalTests
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -628,6 +607,7 @@ jobs:
           target_env: INTQA
       - run-full-sync:
           operation: << parameters.operation >>
+          test_level: << parameters.test_level >>
       - run-batch-job:
                 batch_job_name: Batch_Initiate_DataDictionary
                 operation: << parameters.operation >>
@@ -649,7 +629,11 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: deploy
-    resource_class: large
+      test_level:                    
+        type: enum
+        enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
+        default: RunLocalTests
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -659,6 +643,7 @@ jobs:
           target_env: STAGINGUAT
       - run-full-sync:
           operation: << parameters.operation >>
+          test_level: << parameters.test_level >>  
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -677,7 +662,7 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: validate
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -720,6 +705,7 @@ workflows:
             name: deploy-BRInt-full-sync
             context: sf-intqa
             operation: deploy
+            test_level: << pipeline.parameters.test_level >> 
 
   scheduled-StagingUat-deploy:
     when:
@@ -732,6 +718,7 @@ workflows:
             name: deploy-BRStaging-full-sync
             context: sf-staging
             operation: deploy 
+            test_level: << pipeline.parameters.test_level >> 
 
 
   # ----------------------------------------------------------
@@ -749,6 +736,7 @@ workflows:
             name: validate-BRInt
             context: sf-intqa
             operation: validate
+            test_level: << pipeline.parameters.test_level >> 
 
   scheduled-StagingUat-validate:
     when:
@@ -762,6 +750,7 @@ workflows:
             name: validate-BRStaging
             context: sf-staging
             operation: validate
+            test_level: << pipeline.parameters.test_level >> 
 
   scheduled-Prod-validate:
     when:
@@ -819,6 +808,7 @@ workflows:
             name: deploy-BRInt-full-sync
             context: sf-intqa
             operation: deploy
+            test_level: << pipeline.parameters.test_level >> 
     
   Manual-IntQa-Validate:
     when:
@@ -831,6 +821,7 @@ workflows:
             name: validate-BRInt
             context: sf-intqa
             operation: validate
+            test_level: << pipeline.parameters.test_level >> 
 
   # ----------------------------------------------------------
   # MANUAL: BRStaging (API only) - deploy or validate via action_type
@@ -846,6 +837,7 @@ workflows:
             name: deploy-BRStaging-full-sync
             context: sf-staging
             operation: deploy
+            test_level: << pipeline.parameters.test_level >> 
 
   Manual-StagingUat-Validate:
     when:
@@ -858,6 +850,7 @@ workflows:
             name: validate-BRStaging
             context: sf-staging
             operation: validate
+            test_level: << pipeline.parameters.test_level >> 
   # ----------------------------------------------------------
   # MANUAL: main/prod (API only)
   # - Nothing triggers on merge to main because we have NO webhook workflow for main
