@@ -66,397 +66,150 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # GIT BLAME NOTIFY
-  # Runs only on failure (when: on_fail in each job).
-  # Reads /tmp/deploy_failures.json written by Poll step,
-  # resolves each failed component to a file path, runs
-  # git log to find the last author, looks up their Slack
-  # user ID via users.lookupByEmail, then posts a rich
-  # Slack message tagging each owner.
-  #
-  # Required in CircleCI context:
-  #   SLACK_BOT_TOKEN   - Bot token with users:read.email + chat:write
-  #   SLACK_DEFAULT_CHANNEL - Channel ID to post blame report to
+  # GIT BLAME COLLECT
+  # Runs when: on_fail. Reads /tmp/deploy_failures.json,
+  # runs git log on each failed component to find the last
+  # author (name + email + commit), then writes BLAME_TEXT
+  # to $BASH_ENV so the existing slack/notify custom template
+  # can include it — no Slack API calls, no second message.
   # ----------------------------------------------------------
   git-blame-notify:
     steps:
       - run:
-          name: "🔍 Git Blame — Tag Failed Component Owners in Slack"
+          name: "🔍 Git Blame — Collect Failed Component Owners"
           when: on_fail
           command: |
-            # ── Prerequisites ─────────────────────────────────────────
-            if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-              echo "⚠️  SLACK_BOT_TOKEN not set — skipping blame notification"
-              exit 0
-            fi
-
-            if [ ! -f /tmp/deploy_failures.json ]; then
-              echo "⚠️  /tmp/deploy_failures.json not found"
-              echo "    (Pipeline may have failed before deployment started)"
-              # Still send a generic failure ping for the triggering user
-              python3 - \<<'PYEOF'
-            import json, os, urllib.request, urllib.parse
-
-            token   = os.environ.get("SLACK_BOT_TOKEN", "")
-            channel = os.environ.get("SLACK_DEFAULT_CHANNEL", "")
-            branch  = os.environ.get("CIRCLE_BRANCH", "unknown")
-            job     = os.environ.get("CIRCLE_JOB", "unknown")
-            build   = os.environ.get("CIRCLE_BUILD_URL", "#")
-            trigger = os.environ.get("CIRCLE_USERNAME", "unknown")
-
-            payload = {
-                "channel": channel,
-                "text": f":red_circle: Pipeline failed on `{branch}` — job `{job}` (triggered by {trigger}) — no deployment data captured.",
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn",
-                     "text": f":red_circle: *Pipeline failed* on `{branch}`\nJob: `{job}` | Triggered by: *{trigger}*\n<{build}|View Build>"}},
-                ]
-            }
-            req = urllib.request.Request(
-                "https://slack.com/api/chat.postMessage",
-                data=json.dumps(payload).encode(),
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            )
-            urllib.request.urlopen(req)
-            PYEOF
-              exit 0
-            fi
-
-            # ── Ensure full git history for blame ─────────────────────
             git fetch --unshallow 2>/dev/null || true
-            git fetch origin 2>/dev/null || true
 
-            # ── Resolve Salesforce component type → file path ─────────
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+
             resolve_path() {
-              local COMP_TYPE="$1"
-              local COMP_NAME="$2"
-              local PROJECT_DIR
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-
-              case "$COMP_TYPE" in
-                ApexClass)
-                  echo "${PROJECT_DIR}/force-app/main/default/classes/${COMP_NAME}.cls" ;;
-                ApexTrigger)
-                  echo "${PROJECT_DIR}/force-app/main/default/triggers/${COMP_NAME}.trigger" ;;
-                LightningComponentBundle)
-                  echo "${PROJECT_DIR}/force-app/main/default/lwc/${COMP_NAME}/${COMP_NAME}.js" ;;
-                AuraDefinitionBundle)
-                  echo "${PROJECT_DIR}/force-app/main/default/aura/${COMP_NAME}/${COMP_NAME}.cmp" ;;
-                Flow)
-                  echo "${PROJECT_DIR}/force-app/main/default/flows/${COMP_NAME}.flow-meta.xml" ;;
-                PermissionSet)
-                  echo "${PROJECT_DIR}/force-app/main/default/permissionsets/${COMP_NAME}.permissionset-meta.xml" ;;
-                Profile)
-                  echo "${PROJECT_DIR}/force-app/main/default/profiles/${COMP_NAME}.profile-meta.xml" ;;
-                CustomObject)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/${COMP_NAME}/${COMP_NAME}.object-meta.xml" ;;
+              local TYPE="$1" NAME="$2"
+              case "$TYPE" in
+                ApexClass)               echo "${PROJECT_DIR}/force-app/main/default/classes/${NAME}.cls" ;;
+                ApexTrigger)             echo "${PROJECT_DIR}/force-app/main/default/triggers/${NAME}.trigger" ;;
+                LightningComponentBundle) echo "${PROJECT_DIR}/force-app/main/default/lwc/${NAME}/${NAME}.js" ;;
+                AuraDefinitionBundle)    echo "${PROJECT_DIR}/force-app/main/default/aura/${NAME}/${NAME}.cmp" ;;
+                Flow)                    echo "${PROJECT_DIR}/force-app/main/default/flows/${NAME}.flow-meta.xml" ;;
+                PermissionSet)           echo "${PROJECT_DIR}/force-app/main/default/permissionsets/${NAME}.permissionset-meta.xml" ;;
+                Profile)                 echo "${PROJECT_DIR}/force-app/main/default/profiles/${NAME}.profile-meta.xml" ;;
+                CustomObject)            echo "${PROJECT_DIR}/force-app/main/default/objects/${NAME}/${NAME}.object-meta.xml" ;;
                 CustomField)
-                  # format: ObjectName.FieldName
-                  OBJ=$(echo "$COMP_NAME" | cut -d'.' -f1)
-                  FLD=$(echo "$COMP_NAME" | cut -d'.' -f2)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/fields/${FLD}.field-meta.xml" ;;
+                  echo "${PROJECT_DIR}/force-app/main/default/objects/$(echo $NAME|cut -d. -f1)/fields/$(echo $NAME|cut -d. -f2).field-meta.xml" ;;
                 ValidationRule)
-                  OBJ=$(echo "$COMP_NAME" | cut -d'.' -f1)
-                  VR=$(echo "$COMP_NAME" | cut -d'.' -f2)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/validationRules/${VR}.validationRule-meta.xml" ;;
+                  echo "${PROJECT_DIR}/force-app/main/default/objects/$(echo $NAME|cut -d. -f1)/validationRules/$(echo $NAME|cut -d. -f2).validationRule-meta.xml" ;;
                 *)
-                  # Fallback: search repo by filename
-                  find "${PROJECT_DIR}" -type f \( \
-                    -name "${COMP_NAME}.cls" \
-                    -o -name "${COMP_NAME}.trigger" \
-                    -o -name "${COMP_NAME}.js" \
-                    -o -name "${COMP_NAME}.cmp" \
-                    -o -name "${COMP_NAME}.flow-meta.xml" \
-                  \) 2>/dev/null | head -1 ;;
+                  find "${PROJECT_DIR}" -type f \( -name "${NAME}.cls" -o -name "${NAME}.trigger" -o -name "${NAME}.js" \) 2>/dev/null | head -1 ;;
               esac
             }
 
-            # ── Build blame data and post Slack message ────────────────
-            python3 - \<<'PYEOF'
-            import json, os, subprocess, urllib.request, urllib.parse, sys
+            BLAME_TEXT=""
 
-            token        = os.environ.get("SLACK_BOT_TOKEN", "")
-            channel      = os.environ.get("SLACK_DEFAULT_CHANNEL", "")
-            branch       = os.environ.get("CIRCLE_BRANCH", "unknown")
-            job          = os.environ.get("CIRCLE_JOB", "unknown")
-            build_url    = os.environ.get("CIRCLE_BUILD_URL", "#")
-            trigger_user = os.environ.get("CIRCLE_USERNAME", "unknown")
+            if [ -f /tmp/deploy_failures.json ]; then
+              # Process each component failure
+              python3 - \<<'PYEOF'
+            import json, os, subprocess
 
-            def slack_api(method, payload):
-                req = urllib.request.Request(
-                    f"https://slack.com/api/{method}",
-                    data=json.dumps(payload).encode(),
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json"
-                    }
+            with open("/tmp/deploy_failures.json") as f:
+                data = json.load(f)
+
+            project_dir = subprocess.check_output(
+                "find . -name sfdx-project.json -exec dirname {} \; | head -1",
+                shell=True, stderr=subprocess.DEVNULL
+            ).decode().strip()
+
+            TYPE_MAP = {
+                "ApexClass":               lambda n: f"{project_dir}/force-app/main/default/classes/{n}.cls",
+                "ApexTrigger":             lambda n: f"{project_dir}/force-app/main/default/triggers/{n}.trigger",
+                "LightningComponentBundle":lambda n: f"{project_dir}/force-app/main/default/lwc/{n}/{n}.js",
+                "AuraDefinitionBundle":    lambda n: f"{project_dir}/force-app/main/default/aura/{n}/{n}.cmp",
+                "Flow":                    lambda n: f"{project_dir}/force-app/main/default/flows/{n}.flow-meta.xml",
+                "PermissionSet":           lambda n: f"{project_dir}/force-app/main/default/permissionsets/{n}.permissionset-meta.xml",
+                "Profile":                 lambda n: f"{project_dir}/force-app/main/default/profiles/{n}.profile-meta.xml",
+            }
+
+            def resolve(ctype, name):
+                fn = TYPE_MAP.get(ctype)
+                if fn:
+                    p = fn(name)
+                    if os.path.isfile(p):
+                        return p
+                # fallback search
+                r = subprocess.run(
+                    ["find", project_dir, "-type", "f",
+                     "-name", f"{name}.cls", "-o", "-name", f"{name}.js",
+                     "-o", "-name", f"{name}.trigger"],
+                    capture_output=True, text=True
                 )
-                try:
-                    resp = urllib.request.urlopen(req, timeout=10)
-                    return json.loads(resp.read())
-                except Exception as e:
-                    print(f"Slack API error ({method}): {e}")
-                    return {}
+                return r.stdout.strip().split("\n")[0]
 
-            def lookup_slack_user(email):
-                """Resolve git author email → Slack user ID via users.lookupByEmail.
-                   Tries the raw email first, then a @cargurus.com variant if the
-                   git email is a GitHub noreply or non-corporate address."""
-                candidates = [email]
-
-                # If git email is a GitHub noreply (12345+username@users.noreply.github.com)
-                # extract the username and try username@cargurus.com
-                if "noreply.github.com" in email:
-                    username = email.split("+")[-1].split("@")[0]
-                    candidates.append(f"{username}@cargurus.com")
-                    print(f"  🔁 GitHub noreply detected — also trying {username}@cargurus.com")
-
-                # If email has no @cargurus.com domain, also try appending it
-                if "@cargurus.com" not in email:
-                    local = email.split("@")[0]
-                    candidates.append(f"{local}@cargurus.com")
-                    print(f"  🔁 Non-corporate email — also trying {local}@cargurus.com")
-
-                for candidate in candidates:
-                    url = f"https://slack.com/api/users.lookupByEmail?email={urllib.parse.quote(candidate)}"
-                    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-                    try:
-                        resp = urllib.request.urlopen(req, timeout=10)
-                        data = json.loads(resp.read())
-                        print(f"  🔍 Slack lookup [{candidate}] → ok={data.get('ok')} error={data.get('error','none')}")
-                        if data.get("ok"):
-                            uid = data["user"]["id"]
-                            print(f"  ✅ Resolved {candidate} → {uid} ({data['user'].get('real_name','')})")
-                            return uid
-                        else:
-                            # Surface the exact Slack error (users_not_found, missing_scope, etc.)
-                            print(f"  ⚠️  Slack error for {candidate}: {data.get('error','unknown')}")
-                    except Exception as e:
-                        print(f"  ❌ HTTP error looking up {candidate}: {e}")
-
-                return None
-
-            def git_blame(filepath):
-                """Return (author_email, author_name, short_hash, commit_msg, time_ago) for last commit on file."""
+            def blame(filepath):
                 if not filepath or not os.path.isfile(filepath):
-                    print(f"  ⚠️  File not found in repo: {filepath!r}")
-                    return None, "Unknown", "?", "File not in repo", "unknown"
+                    print(f"  ⚠ path not found: {filepath!r}")
+                    return "unknown", "unknown", "?"
                 try:
                     out = subprocess.check_output(
                         ["git", "log", "--follow", "-n", "1",
-                         "--format=%ae|%an|%h|%s|%ar", "--", filepath],
+                         "--format=%an|%ae|%h", "--", filepath],
                         stderr=subprocess.DEVNULL
                     ).decode().strip()
-                    print(f"  📋 git log [{filepath}] → {out!r}")
-                    if not out:
-                        return None, "Unknown", "?", "No git history", "unknown"
-                    parts = out.split("|", 4)
-                    return parts[0], parts[1], parts[2], parts[3], parts[4]
-                except Exception as ex:
-                    print(f"  ❌ git log error: {ex}")
-                    return None, "Unknown", "?", "git error", "unknown"
+                    print(f"  git log → {out!r}")
+                    if out:
+                        parts = out.split("|", 2)
+                        return parts[0], parts[1], parts[2]
+                except Exception as e:
+                    print(f"  git error: {e}")
+                return "unknown", "unknown", "?"
 
-            # ── Load failures written by Poll step ────────────────────
-            with open("/tmp/deploy_failures.json") as f:
-                failures_data = json.load(f)
+            lines = []
+            seen  = set()
 
-            component_failures = failures_data.get("component_failures", [])
-            test_failures      = failures_data.get("test_failures", [])
-            coverage_warnings  = failures_data.get("coverage_warnings", [])
+            for cf in data.get("component_failures", []):
+                ctype   = cf.get("componentType", "Unknown")
+                name    = cf.get("fullName",       "Unknown")
+                problem = cf.get("problem",        "")[:120].replace('"', "'")
+                path    = resolve(ctype, name)
+                author, email, commit = blame(path)
+                key = f"{name}|{author}"
+                if key not in seen:
+                    seen.add(key)
+                    lines.append(f":red_circle: *{name}* ({ctype})\n>_{problem}_\n>Last changed by: *{author}* ({email}) — `{commit}`")
+                    print(f"  → {name}: {author} <{email}> [{commit}]")
 
-            # ── Collect blame per unique component ────────────────────
-            blame_cache   = {}   # email → slack_user_id
-            blame_results = []
+            for tf in data.get("test_failures", []):
+                name    = tf.get("name",       "Unknown")
+                method  = tf.get("methodName", "")
+                problem = tf.get("message",    "")[:120].replace('"', "'")
+                path    = resolve("ApexClass", name)
+                author, email, commit = blame(path)
+                label = f"{name}.{method}" if method else name
+                key   = f"{label}|{author}"
+                if key not in seen:
+                    seen.add(key)
+                    lines.append(f":test_tube: *{label}* (Test)\n>_{problem}_\n>Last changed by: *{author}* ({email}) — `{commit}`")
+                    print(f"  → {label}: {author} <{email}> [{commit}]")
 
-            def get_mention(email):
-                if email not in blame_cache:
-                    blame_cache[email] = lookup_slack_user(email)
-                uid = blame_cache[email]
-                return f"<@{uid}>" if uid else f"`{email}`"
-
-            for cf in component_failures:
-                comp_type = cf.get("componentType", "Unknown")
-                comp_name = cf.get("fullName",      "Unknown")
-                problem   = cf.get("problem",       "Unknown error")[:200]
-
-                print(f"\n─── Blaming: {comp_type} / {comp_name} ───")
-
-                # Resolve path via shell function (call bash)
-                filepath = subprocess.check_output(
-                    ["bash", "-c", f'source /tmp/resolve_path.sh 2>/dev/null; resolve_path "{comp_type}" "{comp_name}"'],
-                    stderr=subprocess.DEVNULL
-                ).decode().strip()
-                print(f"  📁 Resolved path: {filepath!r}")
-
-                email, author, commit, msg, when = git_blame(filepath or "")
-                print(f"  👤 git author email: {email!r}  name: {author!r}")
-                mention = get_mention(email) if email else "`unknown`"
-                print(f"  💬 Slack mention: {mention}")
-
-                blame_results.append({
-                    "kind": "component",
-                    "type": comp_type,
-                    "name": comp_name,
-                    "file": filepath or "not found",
-                    "problem": problem,
-                    "author": author,
-                    "email": email,
-                    "commit": commit,
-                    "commit_msg": msg,
-                    "when": when,
-                    "mention": mention,
-                })
-
-            for tf in test_failures:
-                comp_name = tf.get("name",       "Unknown")
-                method    = tf.get("methodName", "")
-                problem   = tf.get("message",    "")[:200]
-
-                filepath = subprocess.check_output(
-                    ["bash", "-c", f'source /tmp/resolve_path.sh 2>/dev/null; resolve_path "ApexClass" "{comp_name}"'],
-                    stderr=subprocess.DEVNULL
-                ).decode().strip()
-
-                email, author, commit, msg, when = git_blame(filepath or "")
-                mention = get_mention(email) if email else "`unknown`"
-
-                blame_results.append({
-                    "kind": "test",
-                    "type": "ApexClass (Test)",
-                    "name": f"{comp_name}.{method}" if method else comp_name,
-                    "file": filepath or "not found",
-                    "problem": problem,
-                    "author": author,
-                    "email": email,
-                    "commit": commit,
-                    "commit_msg": msg,
-                    "when": when,
-                    "mention": mention,
-                })
-
-            # ── Collect unique owners for summary header ───────────────
-            all_mentions = sorted(set(r["mention"] for r in blame_results if r["mention"] != "`unknown`"))
-            owner_line   = ", ".join(all_mentions) if all_mentions else "unknown authors"
-
-            # ── Build Slack blocks ────────────────────────────────────
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "🚨 Salesforce Deploy Failed — Blame Report", "emoji": True}
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {"type": "mrkdwn", "text": f"*Branch:*\n`{branch}`"},
-                        {"type": "mrkdwn", "text": f"*Job:*\n`{job}`"},
-                        {"type": "mrkdwn", "text": f"*Triggered by:*\n`{trigger_user}`"},
-                        {"type": "mrkdwn", "text": f"*Owners notified:*\n{owner_line}"},
-                    ]
-                },
-                {"type": "divider"},
-            ]
-
-            # One block per failed component
-            for r in blame_results:
-                emoji = "🔴" if r["kind"] == "component" else "🧪"
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            f"{emoji} *{r['type']}* › `{r['name']}`\n"
-                            f">_{r['problem']}_"
-                        )
-                    }
-                })
-                blocks.append({
-                    "type": "context",
-                    "elements": [
-                        {"type": "mrkdwn",
-                         "text": (
-                             f"👤 *Owner:* {r['mention']}  |  "
-                             f"📁 `{r['file']}`  |  "
-                             f"🕐 {r['when']}  |  "
-                             f"📝 `{r['commit']}` {r['commit_msg']}"
-                         )}
-                    ]
-                })
-                blocks.append({"type": "divider"})
-
-            # Coverage warnings (no blame needed, just list them)
-            if coverage_warnings:
-                cw_text = "\n".join(
-                    f"• `{w.get('name','?')}`: {w.get('message','')[:120]}"
-                    for w in coverage_warnings[:5]
-                )
-                blocks.append({
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"⚠️ *Code Coverage Failures*\n{cw_text}"}
-                })
-                blocks.append({"type": "divider"})
-
-            # Build link button
-            blocks.append({
-                "type": "actions",
-                "elements": [{
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "🔗 View Build", "emoji": True},
-                    "url": build_url,
-                    "style": "danger"
-                }]
-            })
-
-            # ── Post to Slack channel ─────────────────────────────────
-            result = slack_api("chat.postMessage", {
-                "channel": channel,
-                "text": f"🚨 Deploy failed on `{branch}` — {len(blame_results)} component(s). Owners: {owner_line}",
-                "blocks": blocks,
-                "unfurl_links": False,
-            })
-
-            if result.get("ok"):
-                print(f"✅ Blame report posted to Slack (ts={result.get('ts')})")
-            else:
-                print(f"❌ Slack post failed: {result.get('error','unknown')}")
-                sys.exit(1)
-
-            # ── DM each unique owner directly ─────────────────────────
-            seen_emails = set()
-            for r in blame_results:
-                if not r["email"] or r["email"] in seen_emails:
-                    continue
-                seen_emails.add(r["email"])
-
-                uid = blame_cache.get(r["email"])
-                if not uid:
-                    print(f"  ⚠️  No Slack user found for {r['email']} — skipping DM")
-                    continue
-
-                # Open DM channel
-                dm = slack_api("conversations.open", {"users": uid})
-                if not dm.get("ok"):
-                    print(f"  ⚠️  Could not open DM for {r['email']}")
-                    continue
-
-                dm_channel = dm["channel"]["id"]
-                owned = [x for x in blame_results if x["email"] == r["email"]]
-                comp_list = "\n".join(
-                    f"  • `{x['name']}` ({x['type']}): _{x['problem']}_"
-                    for x in owned
-                )
-
-                slack_api("chat.postMessage", {
-                    "channel": dm_channel,
-                    "text": (
-                        f"Hey {r['author'].split()[0]}! 👋  Your recent commit(s) may have caused a pipeline failure.\n\n"
-                        f"*Branch:* `{branch}` | *Job:* `{job}`\n\n"
-                        f"*Components you own that failed:*\n{comp_list}\n\n"
-                        f"<{build_url}|→ View the full build log>"
-                    )
-                })
-                print(f"  ✅ DM sent to {r['author']} ({r['email']})")
-
+            # Write single-line BLAME_TEXT to a temp file
+            # (newlines encoded as \n so it can live in BASH_ENV)
+            text = "\\n\\n".join(lines) if lines else "No component details found."
+            with open("/tmp/blame_text.txt", "w") as f:
+                f.write(text)
+            print(f"\n✅ Wrote {len(lines)} blame entry(s) to /tmp/blame_text.txt")
             PYEOF
+
+              # Read back and export to BASH_ENV
+              if [ -f /tmp/blame_text.txt ]; then
+                BLAME_TEXT=$(cat /tmp/blame_text.txt)
+              else
+                BLAME_TEXT="No failure details captured."
+              fi
+            else
+              BLAME_TEXT="Pipeline failed before deployment reached Salesforce."
+            fi
+
+            # Safely write to BASH_ENV (escape double-quotes)
+            printf 'export BLAME_TEXT=%q\n' "$BLAME_TEXT" >> $BASH_ENV
+            echo "✅ BLAME_TEXT written to BASH_ENV"
 
   # ----------------------------------------------------------
   # FULL SYNC (validate or deploy)
@@ -889,13 +642,47 @@ jobs:
       # ── Git blame runs first on failure, then fallback generic notify ──
       - git-blame-notify
       - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
 
   # ----------------------------------------------------------
   # STAGINGUAT AUTO DEPLOY
@@ -926,13 +713,47 @@ jobs:
           create_tags: << parameters.create_tags >>
       - git-blame-notify
       - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
 
   # ----------------------------------------------------------
   # INTQA FULL SYNC
@@ -963,13 +784,47 @@ jobs:
           operation: << parameters.operation >>
       - git-blame-notify
       - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
 
   # ----------------------------------------------------------
   # STAGINGUAT FULL SYNC
@@ -997,13 +852,47 @@ jobs:
           test_level: << parameters.test_level >>
       - git-blame-notify
       - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
 
   # ----------------------------------------------------------
   # PRODUCTION FULL SYNC
@@ -1029,13 +918,47 @@ jobs:
           operation: << parameters.operation >>
       - git-blame-notify
       - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_fail_1
-      - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
           template: basic_success_1
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
 
 # ============================================================
 # WORKFLOWS  (unchanged from original)
