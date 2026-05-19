@@ -499,26 +499,38 @@ commands:
                 [ -n "$COVERAGE_WARNINGS" ] && { echo "🔴 CODE COVERAGE:"; echo "$COVERAGE_WARNINGS"; echo ""; }
 
                 # ── Write structured failure JSON for git-blame-notify ─
-                # This file is the handoff between Poll and blame steps.
-                echo "$REPORT_JSON" | python3 - \<<'PYEOF'
-            import json, sys
+                # Save REPORT_JSON to a file first — you cannot pipe to
+                # stdin AND use a heredoc for the script simultaneously.
+                echo "$REPORT_JSON" > /tmp/report_raw.json
 
-            raw = sys.stdin.read()
+                python3 \<<'PYEOF'
+            import json, os
+
             try:
-                report = json.loads(raw)
-            except Exception:
-                # If jq already processed it, just write empty
+                with open("/tmp/report_raw.json") as f:
+                    report = json.load(f)
+            except Exception as e:
+                print(f"❌ Could not parse /tmp/report_raw.json: {e}")
                 with open("/tmp/deploy_failures.json", "w") as f:
                     json.dump({"component_failures":[],"test_failures":[],"coverage_warnings":[]}, f)
-                sys.exit(0)
+                raise SystemExit(0)
 
             result  = report.get("result", {})
             details = result.get("details", {})
 
+            # componentFailures can be a dict (single) or list (multiple) — normalise both
+            def to_list(val):
+                if val is None:   return []
+                if isinstance(val, list): return val
+                if isinstance(val, dict): return [val]
+                return []
+
+            run_test = details.get("runTestResult", {}) or {}
+
             output = {
-                "component_failures": details.get("componentFailures", []),
-                "test_failures":      details.get("runTestResult", {}).get("failures", []),
-                "coverage_warnings":  details.get("runTestResult", {}).get("codeCoverageWarnings", []),
+                "component_failures": to_list(details.get("componentFailures")),
+                "test_failures":      to_list(run_test.get("failures")),
+                "coverage_warnings":  to_list(run_test.get("codeCoverageWarnings")),
             }
 
             with open("/tmp/deploy_failures.json", "w") as f:
@@ -526,6 +538,9 @@ commands:
 
             total = len(output["component_failures"]) + len(output["test_failures"])
             print(f"📝 Saved {total} failure(s) to /tmp/deploy_failures.json")
+            print(f"   component_failures : {len(output['component_failures'])}")
+            print(f"   test_failures      : {len(output['test_failures'])}")
+            print(f"   coverage_warnings  : {len(output['coverage_warnings'])}")
             PYEOF
 
                 # Write resolve_path helper so Python subprocess can call it
