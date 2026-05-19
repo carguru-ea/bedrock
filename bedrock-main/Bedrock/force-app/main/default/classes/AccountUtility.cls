@@ -17,7 +17,8 @@ public class AccountUtility {
      * @param industry The industry filterddd
      * @return List of accounts
      */
-    public static List<Account> getAccountsByIndustry(String industry) {
+    //public static List<Account> getAccountsByIndustry(String industry) {
+    public static List<Account> getAccountsByIndustry(Strin industry) {
         return [SELECT Id, Name, Industry, Phone FROM Account WHERE Industry = :industry];
     }
     
