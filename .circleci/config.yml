@@ -199,21 +199,47 @@ commands:
                     return {}
 
             def lookup_slack_user(email):
-                """Resolve git author email → Slack user ID via users.lookupByEmail."""
-                url = f"https://slack.com/api/users.lookupByEmail?email={urllib.parse.quote(email)}"
-                req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-                try:
-                    resp = urllib.request.urlopen(req, timeout=10)
-                    data = json.loads(resp.read())
-                    if data.get("ok"):
-                        return data["user"]["id"]
-                except Exception:
-                    pass
+                """Resolve git author email → Slack user ID via users.lookupByEmail.
+                   Tries the raw email first, then a @cargurus.com variant if the
+                   git email is a GitHub noreply or non-corporate address."""
+                candidates = [email]
+
+                # If git email is a GitHub noreply (12345+username@users.noreply.github.com)
+                # extract the username and try username@cargurus.com
+                if "noreply.github.com" in email:
+                    username = email.split("+")[-1].split("@")[0]
+                    candidates.append(f"{username}@cargurus.com")
+                    print(f"  🔁 GitHub noreply detected — also trying {username}@cargurus.com")
+
+                # If email has no @cargurus.com domain, also try appending it
+                if "@cargurus.com" not in email:
+                    local = email.split("@")[0]
+                    candidates.append(f"{local}@cargurus.com")
+                    print(f"  🔁 Non-corporate email — also trying {local}@cargurus.com")
+
+                for candidate in candidates:
+                    url = f"https://slack.com/api/users.lookupByEmail?email={urllib.parse.quote(candidate)}"
+                    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+                    try:
+                        resp = urllib.request.urlopen(req, timeout=10)
+                        data = json.loads(resp.read())
+                        print(f"  🔍 Slack lookup [{candidate}] → ok={data.get('ok')} error={data.get('error','none')}")
+                        if data.get("ok"):
+                            uid = data["user"]["id"]
+                            print(f"  ✅ Resolved {candidate} → {uid} ({data['user'].get('real_name','')})")
+                            return uid
+                        else:
+                            # Surface the exact Slack error (users_not_found, missing_scope, etc.)
+                            print(f"  ⚠️  Slack error for {candidate}: {data.get('error','unknown')}")
+                    except Exception as e:
+                        print(f"  ❌ HTTP error looking up {candidate}: {e}")
+
                 return None
 
             def git_blame(filepath):
                 """Return (author_email, author_name, short_hash, commit_msg, time_ago) for last commit on file."""
                 if not filepath or not os.path.isfile(filepath):
+                    print(f"  ⚠️  File not found in repo: {filepath!r}")
                     return None, "Unknown", "?", "File not in repo", "unknown"
                 try:
                     out = subprocess.check_output(
@@ -221,11 +247,13 @@ commands:
                          "--format=%ae|%an|%h|%s|%ar", "--", filepath],
                         stderr=subprocess.DEVNULL
                     ).decode().strip()
+                    print(f"  📋 git log [{filepath}] → {out!r}")
                     if not out:
                         return None, "Unknown", "?", "No git history", "unknown"
                     parts = out.split("|", 4)
                     return parts[0], parts[1], parts[2], parts[3], parts[4]
-                except Exception:
+                except Exception as ex:
+                    print(f"  ❌ git log error: {ex}")
                     return None, "Unknown", "?", "git error", "unknown"
 
             # ── Load failures written by Poll step ────────────────────
@@ -251,14 +279,19 @@ commands:
                 comp_name = cf.get("fullName",      "Unknown")
                 problem   = cf.get("problem",       "Unknown error")[:200]
 
+                print(f"\n─── Blaming: {comp_type} / {comp_name} ───")
+
                 # Resolve path via shell function (call bash)
                 filepath = subprocess.check_output(
                     ["bash", "-c", f'source /tmp/resolve_path.sh 2>/dev/null; resolve_path "{comp_type}" "{comp_name}"'],
                     stderr=subprocess.DEVNULL
                 ).decode().strip()
+                print(f"  📁 Resolved path: {filepath!r}")
 
                 email, author, commit, msg, when = git_blame(filepath or "")
+                print(f"  👤 git author email: {email!r}  name: {author!r}")
                 mention = get_mention(email) if email else "`unknown`"
+                print(f"  💬 Slack mention: {mention}")
 
                 blame_results.append({
                     "kind": "component",
