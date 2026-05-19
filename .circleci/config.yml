@@ -94,7 +94,7 @@ commands:
               echo "⚠️  /tmp/deploy_failures.json not found"
               echo "    (Pipeline may have failed before deployment started)"
               # Still send a generic failure ping for the triggering user
-              python3 - <<'PYEOF'
+              python3 - \<<'PYEOF'
             import json, os, urllib.request, urllib.parse
 
             token   = os.environ.get("SLACK_BOT_TOKEN", "")
@@ -172,7 +172,7 @@ commands:
             }
 
             # ── Build blame data and post Slack message ────────────────
-            python3 - <<'PYEOF'
+            python3 - \<<'PYEOF'
             import json, os, subprocess, urllib.request, urllib.parse, sys
 
             token        = os.environ.get("SLACK_BOT_TOKEN", "")
@@ -714,7 +714,7 @@ commands:
 
                 # ── Write structured failure JSON for git-blame-notify ─
                 # This file is the handoff between Poll and blame steps.
-                echo "$REPORT_JSON" | python3 - <<'PYEOF'
+                echo "$REPORT_JSON" | python3 - \<<'PYEOF'
             import json, sys
 
             raw = sys.stdin.read()
