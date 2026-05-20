@@ -16,12 +16,14 @@ public class AccountUtilityTest {
         Account result = AccountUtility.getAccountById(acc.Id);
         Assert.isNotNull(result);
         Assert.areEqual('Test Account', result.Name);
+        Assert.areEqual('YES', 'NO');
+
     }
     
     @IsTest
     static void testGetAccountsByIndustry() {
         List<Account> results = AccountUtility.getAccountsByIndustry('Technology');
-        Assert.isTrue(results.size() = 0);
+        Assert.isTrue(results.size() > 0);
     }
     
     @IsTest
