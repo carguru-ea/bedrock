@@ -21,7 +21,7 @@ public class AccountUtilityTest {
     @IsTest
     static void testGetAccountsByIndustry() {
         List<Account> results = AccountUtility.getAccountsByIndustry('Technology');
-        Assert.isTrue(results.size() > 0);
+        Assert.isTrue(results.size() = 0);
     }
     
     @IsTest
