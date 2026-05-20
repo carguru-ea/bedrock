@@ -32,6 +32,11 @@ commands:
   # ----------------------------------------------------------
   install-tooling:
     steps:
+      - run:
+          name: "⏱️ Record Pipeline Start Time"
+          command: |
+            echo $(date +%s) > /tmp/pipeline_start.txt
+            echo "Pipeline started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
       - node/install:
           node-version: "20"
       - run:
@@ -500,14 +505,22 @@ commands:
                   TESTS_RAN=$(jq -r '.result.numberTestsCompleted // 0'         /tmp/report_raw.json)
                   TESTS_PASS=$(jq -r '.result.numberTestsCompleted // 0'        /tmp/report_raw.json)
 
-                  # Compute human-readable duration
-                  DEPLOY_END=$(date +%s)
-                  DURATION_SECS=$(( DEPLOY_END - DEPLOY_START ))
-                  DURATION_MINS=$(( DURATION_SECS / 60 ))
-                  DURATION_REMAINDER=$(( DURATION_SECS % 60 ))
-                  DURATION_STR="${DURATION_MINS}m ${DURATION_REMAINDER}s"
+                  # Pipeline duration (checkout → now)
+                  PIPELINE_END=$(date +%s)
+                  PIPELINE_START=$(cat /tmp/pipeline_start.txt 2>/dev/null || echo "$PIPELINE_END")
+                  PIPELINE_SECS=$(( PIPELINE_END - PIPELINE_START ))
+                  PIPELINE_MINS=$(( PIPELINE_SECS / 60 ))
+                  PIPELINE_REM=$(( PIPELINE_SECS % 60 ))
+                  PIPELINE_DURATION="${PIPELINE_MINS}m ${PIPELINE_REM}s"
 
-                  DEPLOY_SUMMARY=":stopwatch: *Time taken:* ${DURATION_STR}\n:package: *Components:* ${COMP_DEPLOYED}/${COMP_TOTAL} deployed"
+                  # Salesforce deploy-only duration
+                  DEPLOY_END=$(date +%s)
+                  DEPLOY_SECS=$(( DEPLOY_END - DEPLOY_START ))
+                  DEPLOY_MINS=$(( DEPLOY_SECS / 60 ))
+                  DEPLOY_REM=$(( DEPLOY_SECS % 60 ))
+                  DEPLOY_DURATION_STR="${DEPLOY_MINS}m ${DEPLOY_REM}s"
+
+                  DEPLOY_SUMMARY=":stopwatch: *Pipeline:* ${PIPELINE_DURATION}  |  *Deploy:* ${DEPLOY_DURATION_STR}\n:package: *Components:* ${COMP_DEPLOYED}/${COMP_TOTAL} deployed"
 
                   if [ "$TESTS_RAN" -gt 0 ] 2>/dev/null; then
                     DEPLOY_SUMMARY="${DEPLOY_SUMMARY}\n:test_tube: *Tests passed:* ${TESTS_PASS}"
@@ -612,12 +625,22 @@ commands:
                 TOTAL_FAILURES=$(jq -r '.result.numberComponentErrors // 0' /tmp/report_raw.json)
                 TOTAL_TEST_FAILURES=$(jq -r '.result.numberTestErrors // 0' /tmp/report_raw.json)
 
-                # Compute duration for failure Slack message
+                # Pipeline duration (checkout → now)
+                PIPELINE_END=$(date +%s)
+                PIPELINE_START=$(cat /tmp/pipeline_start.txt 2>/dev/null || echo "$PIPELINE_END")
+                PIPELINE_SECS=$(( PIPELINE_END - PIPELINE_START ))
+                PIPELINE_MINS=$(( PIPELINE_SECS / 60 ))
+                PIPELINE_REM=$(( PIPELINE_SECS % 60 ))
+                PIPELINE_DURATION="${PIPELINE_MINS}m ${PIPELINE_REM}s"
+
+                # Salesforce deploy-only duration
                 DEPLOY_END=$(date +%s)
-                DURATION_SECS=$(( DEPLOY_END - DEPLOY_START ))
-                DURATION_MINS=$(( DURATION_SECS / 60 ))
-                DURATION_REMAINDER=$(( DURATION_SECS % 60 ))
-                DURATION_STR="${DURATION_MINS}m ${DURATION_REMAINDER}s"
+                DEPLOY_SECS=$(( DEPLOY_END - DEPLOY_START ))
+                DEPLOY_MINS=$(( DEPLOY_SECS / 60 ))
+                DEPLOY_REM=$(( DEPLOY_SECS % 60 ))
+                DEPLOY_DURATION_STR="${DEPLOY_MINS}m ${DEPLOY_REM}s"
+
+                DURATION_STR="*Pipeline:* ${PIPELINE_DURATION}  |  *Deploy:* ${DEPLOY_DURATION_STR}"
                 printf 'export DEPLOY_DURATION=%q\n' "$DURATION_STR" >> $BASH_ENV
 
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
