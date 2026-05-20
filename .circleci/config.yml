@@ -460,6 +460,12 @@ commands:
 
                 if [ "$SUCCESS" = "true" ]; then
                   echo "✅ Deployment completed successfully!"
+                  # Export deploy stats for success Slack message
+                  SUMMARY=":package: *Components:* ${COMPONENTS_DEPLOYED}/${COMPONENTS_TOTAL} deployed"
+                  if [ "$TESTS_COMPLETED" -gt 0 ] 2>/dev/null; then
+                    SUMMARY="${SUMMARY}\n:test_tube: *Tests run:* ${TESTS_COMPLETED}/${TESTS_TOTAL} passed"
+                  fi
+                  printf 'export DEPLOY_SUMMARY=%q\n' "$SUMMARY" >> $BASH_ENV
                   exit 0
                 fi
 
@@ -666,6 +672,11 @@ commands:
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
                   ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
                 },
                 { "type": "divider" },
                 {
