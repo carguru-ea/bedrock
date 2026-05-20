@@ -10,7 +10,7 @@ public class StringUtility {
         for (String word : words) {
             capitalized.add(word.capitalize());
         }
-        //return String.join(capitalized, ' ');
+        return String.join(capitalized, ' ');
     }
     
     public static Boolean isValidEmail(String email) {
