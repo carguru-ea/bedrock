@@ -219,9 +219,6 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      - find-test-classes:
-          target_env: << parameters.target_env >>
-
       - run:
           name: Deploy Metadata
           command: |
