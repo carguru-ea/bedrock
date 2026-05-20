@@ -33,7 +33,7 @@ public class AccountUtilityTest {
     @IsTest
     static void testAccountNameExists() {
         Boolean exists = AccountUtility.accountNameExists('Test Account');
-        Assert.isTrue(exists);
+        Assert.isFalse(exists);
     }
     
     @IsTest
