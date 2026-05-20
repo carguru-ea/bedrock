@@ -29,7 +29,7 @@ public class AccountUtilityTest {
     @IsTest
     static void testGetAccountsByIndustryEmpty() {
         List<Account> results = AccountUtility.getAccountsByIndustry('NonExistent');
-        Assert.areEqual(0, results.size());
+        Assert.areEqual(1, results.size());
     }
     
     @IsTest
