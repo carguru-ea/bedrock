@@ -5,7 +5,7 @@ orbs:
   slack: circleci/slack@4.12.5
 
 # ============================================================
-# PIPELINE PARAMETERS
+# PIPELINE PARAMETER (single dropdown)
 # ============================================================
 parameters:
   action_type:
@@ -14,7 +14,7 @@ parameters:
       - validate
       - deploy
     default: validate
-  test_level:
+  test_level:                          
     type: enum
     enum:
       - RunLocalTests
@@ -32,11 +32,6 @@ commands:
   # ----------------------------------------------------------
   install-tooling:
     steps:
-      - run:
-          name: "⏱️ Record Pipeline Start Time"
-          command: |
-            echo $(date +%s) > /tmp/pipeline_start.txt
-            echo "Pipeline started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
       - node/install:
           node-version: "20"
       - run:
@@ -46,7 +41,153 @@ commands:
             sf --version
 
   # ----------------------------------------------------------
-  # JWT AUTH
+  # Find Test Classes from GitHub Repository Coverage Map
+  # ----------------------------------------------------------
+  find-test-classes:
+    parameters:
+      target_env:
+        type: string
+    steps:
+      - run:
+          name: Download Coverage Map from Repository
+          command: |
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            echo "🔍 Downloading test coverage map from EA-Salesforce-Mappings repository for << parameters.target_env >>..."
+            
+            REPO_URL="${MAPPINGS_REPO_URL}"
+            FILENAME="${COVERAGE_MAP_FILENAME}"
+            
+            if [ -z "$REPO_URL" ]; then
+              echo "❌ Error: MAPPINGS_REPO_URL not set"
+              exit 1
+            fi
+            
+            if [ -z "$FILENAME" ]; then
+              echo "❌ Error: COVERAGE_MAP_FILENAME not set"
+              exit 1
+            fi
+            
+            COVERAGE_URL="https://raw.githubusercontent.com/${REPO_URL}/main/JSON/${FILENAME}"
+            echo "📍 Fetching from: $COVERAGE_URL"
+            
+            AUTH_HEADER=""
+            if [ -n "$GITHUB_TEST_TOKEN" ]; then
+              AUTH_HEADER="Authorization: token $GITHUB_TEST_TOKEN"
+              echo "🔑 Using GITHUB_TEST_TOKEN for authentication"
+            else
+              echo "⚠️ No GITHUB_TEST_TOKEN set — will only work for public repos"
+            fi
+            
+            if curl -f -s -H "$AUTH_HEADER" "$COVERAGE_URL" -o coverage-map.json 2>/dev/null; then
+              if [ -f "coverage-map.json" ] && [ -s "coverage-map.json" ]; then
+                echo "✅ Coverage map downloaded successfully"
+                echo "📊 File size: $(wc -c < coverage-map.json) bytes"
+                echo "export MAP_DOWNLOADED=true" >> $BASH_ENV
+              else
+                echo "❌ Failed to download coverage map - file is empty or missing"
+                exit 1
+              fi
+            else
+              echo "❌ Error downloading from repository - HTTP request failed"
+              exit 1
+            fi
+
+      - run:
+          name: Determine Required Test Classes
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+            
+            if [ -f "files.txt" ]; then
+              echo "🔍 Finding changed Apex classes..."
+              changed_classes=$(cat files.txt | grep -E '^force-app/.*classes/.*\.cls$' | grep -v '.*-meta\.xml$' | sed 's/.*classes\///' | sed 's/\.cls$//' || true)
+              
+              if [ -n "$changed_classes" ]; then
+                echo "📝 Changed Apex classes found:"
+                echo "$changed_classes"
+                echo "$changed_classes" > changed_classes.txt
+                echo "export APEX_CLASSES_CHANGED=true" >> $BASH_ENV
+              else
+                echo "ℹ️ No Apex classes changed"
+                echo "" > changed_classes.txt
+                echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
+              fi
+            else
+              echo "⚠️ files.txt not found"
+              echo "" > changed_classes.txt
+              echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
+            fi
+            
+            test_classes=""
+            
+            if [ "$MAP_DOWNLOADED" = "true" ] && [ -f "coverage-map.json" ] && [ -s "changed_classes.txt" ]; then
+              echo ""
+              echo "🔍 PRONG 1: Looking up test classes in coverage map..."
+              
+              while IFS= read -r class_name; do
+                if [ -z "$class_name" ]; then
+                  continue
+                fi
+                class_name_only=$(echo "$class_name" | sed 's|.*/||' | xargs)
+                mapped_tests=$(jq -r --arg classname "$class_name_only" '.coverage[$classname].Tests[]?' coverage-map.json 2>/dev/null || true)
+                
+                if [ -n "$mapped_tests" ]; then
+                  echo "  ✓ Found test classes for $class_name:"
+                  echo "$mapped_tests" | while read -r test; do echo "    - $test"; done
+                  test_classes="$test_classes $mapped_tests"
+                else
+                  echo "  ⚠️ No coverage mapping found for $class_name"
+                fi
+              done < changed_classes.txt
+            fi
+            
+            if [ -s "changed_classes.txt" ]; then
+              echo ""
+              echo "🔍 PRONG 2: Scanning for classes with 'test' in the name..."
+              name_based_tests=$(cat changed_classes.txt | grep -i "test" | sed 's|.*/||' || true)
+              if [ -n "$name_based_tests" ]; then
+                echo "  ✓ Found test classes by name:"
+                echo "$name_based_tests" | while read -r test; do echo "    - $test"; done
+                test_classes="$test_classes $name_based_tests"
+              else
+                echo "  ℹ️ No test classes found by name"
+              fi
+            fi
+            
+            if [ -f "package.xml" ]; then
+              echo ""
+              echo "🔍 PRONG 3: Scanning package.xml for test classes..."
+              package_tests=$(grep -oP '<members>\K[^<]+(?=</members>)' package.xml | grep -i "test" || true)
+              if [ -n "$package_tests" ]; then
+                echo "  ✓ Found test classes in package.xml:"
+                echo "$package_tests" | while read -r test; do echo "    - $test"; done
+                test_classes="$test_classes $package_tests"
+              else
+                echo "  ℹ️ No test classes found in package.xml"
+              fi
+            fi
+            
+            final_test_classes=$(echo "$test_classes" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//;s/ *$//')
+            
+            echo ""
+            echo "📋 Final test classes to run:"
+            if [ -n "$final_test_classes" ]; then
+              echo "$final_test_classes" | tr ' ' '\n' | while read -r test; do
+                if [ -n "$test" ]; then echo "  - $test"; fi
+              done
+              echo "export TEST_CLASSES='$final_test_classes'" >> $BASH_ENV
+            else
+              echo "  ⚠️ No test classes found"
+              echo "export TEST_CLASSES=''" >> $BASH_ENV
+            fi
+            
+            rm -f coverage-map.json changed_classes.txt
+
+  # ----------------------------------------------------------
+  # JWT AUTH COMMAND
   # ----------------------------------------------------------
   jwt-auth:
     parameters:
@@ -59,6 +200,7 @@ commands:
             echo "${JWT_KEY_<< parameters.target_env >>}" | base64 -d > server.key 2>/dev/null \
               || echo "${JWT_KEY_<< parameters.target_env >>}" > server.key
             chmod 600 server.key
+
       - run:
           name: Authenticate to Salesforce (<< parameters.target_env >>)
           command: |
@@ -71,206 +213,48 @@ commands:
               --set-default
 
   # ----------------------------------------------------------
-  # GIT BLAME COLLECT
-  # Runs when: on_fail. Reads /tmp/deploy_failures.json,
-  # runs git log on each failed component to find the last
-  # author (name + email + commit), then writes BLAME_TEXT
-  # to $BASH_ENV so the existing slack/notify custom template
-  # can include it — no Slack API calls, no second message.
-  # ----------------------------------------------------------
-  git-blame-notify:
-    steps:
-      - run:
-          name: "🔍 Git Blame — Collect Failed Component Owners"
-          when: on_fail
-          command: |
-            git fetch --unshallow 2>/dev/null || true
-
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-
-            resolve_path() {
-              local TYPE="$1" NAME="$2"
-              case "$TYPE" in
-                ApexClass)               echo "${PROJECT_DIR}/force-app/main/default/classes/${NAME}.cls" ;;
-                ApexTrigger)             echo "${PROJECT_DIR}/force-app/main/default/triggers/${NAME}.trigger" ;;
-                LightningComponentBundle) echo "${PROJECT_DIR}/force-app/main/default/lwc/${NAME}/${NAME}.js" ;;
-                AuraDefinitionBundle)    echo "${PROJECT_DIR}/force-app/main/default/aura/${NAME}/${NAME}.cmp" ;;
-                Flow)                    echo "${PROJECT_DIR}/force-app/main/default/flows/${NAME}.flow-meta.xml" ;;
-                PermissionSet)           echo "${PROJECT_DIR}/force-app/main/default/permissionsets/${NAME}.permissionset-meta.xml" ;;
-                Profile)                 echo "${PROJECT_DIR}/force-app/main/default/profiles/${NAME}.profile-meta.xml" ;;
-                CustomObject)            echo "${PROJECT_DIR}/force-app/main/default/objects/${NAME}/${NAME}.object-meta.xml" ;;
-                CustomField)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/$(echo $NAME|cut -d. -f1)/fields/$(echo $NAME|cut -d. -f2).field-meta.xml" ;;
-                ValidationRule)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/$(echo $NAME|cut -d. -f1)/validationRules/$(echo $NAME|cut -d. -f2).validationRule-meta.xml" ;;
-                *)
-                  find "${PROJECT_DIR}" -type f \( -name "${NAME}.cls" -o -name "${NAME}.trigger" -o -name "${NAME}.js" \) 2>/dev/null | head -1 ;;
-              esac
-            }
-
-            BLAME_TEXT=""
-
-            if [ -f /tmp/deploy_failures.json ]; then
-              # Process each component failure
-              python3 - \<<'PYEOF'
-            import json, os, subprocess
-
-            with open("/tmp/deploy_failures.json") as f:
-                data = json.load(f)
-
-            project_dir = subprocess.check_output(
-                "find . -name sfdx-project.json -exec dirname {} \; | head -1",
-                shell=True, stderr=subprocess.DEVNULL
-            ).decode().strip()
-
-            TYPE_MAP = {
-                "ApexClass":               lambda n: f"{project_dir}/force-app/main/default/classes/{n}.cls",
-                "ApexTrigger":             lambda n: f"{project_dir}/force-app/main/default/triggers/{n}.trigger",
-                "LightningComponentBundle":lambda n: f"{project_dir}/force-app/main/default/lwc/{n}/{n}.js",
-                "AuraDefinitionBundle":    lambda n: f"{project_dir}/force-app/main/default/aura/{n}/{n}.cmp",
-                "Flow":                    lambda n: f"{project_dir}/force-app/main/default/flows/{n}.flow-meta.xml",
-                "PermissionSet":           lambda n: f"{project_dir}/force-app/main/default/permissionsets/{n}.permissionset-meta.xml",
-                "Profile":                 lambda n: f"{project_dir}/force-app/main/default/profiles/{n}.profile-meta.xml",
-            }
-
-            def resolve(ctype, name):
-                fn = TYPE_MAP.get(ctype)
-                if fn:
-                    p = fn(name)
-                    if os.path.isfile(p):
-                        return p
-                # fallback search
-                r = subprocess.run(
-                    ["find", project_dir, "-type", "f",
-                     "-name", f"{name}.cls", "-o", "-name", f"{name}.js",
-                     "-o", "-name", f"{name}.trigger"],
-                    capture_output=True, text=True
-                )
-                return r.stdout.strip().split("\n")[0]
-
-            def blame(filepath):
-                if not filepath or not os.path.isfile(filepath):
-                    print(f"  ⚠ path not found: {filepath!r}")
-                    return "unknown", "unknown", "?"
-                try:
-                    out = subprocess.check_output(
-                        ["git", "log", "--follow", "-n", "1",
-                         "--format=%an|%ae|%h", "--", filepath],
-                        stderr=subprocess.DEVNULL
-                    ).decode().strip()
-                    print(f"  git log → {out!r}")
-                    if out:
-                        parts = out.split("|", 2)
-                        return parts[0], parts[1], parts[2]
-                except Exception as e:
-                    print(f"  git error: {e}")
-                return "unknown", "unknown", "?"
-
-            def clean_email(email):
-                """Show just 'username' for GitHub noreply, full address otherwise."""
-                if "noreply.github.com" in email:
-                    # '163787984+rvarada-p@users.noreply.github.com' → 'rvarada-p'
-                    return email.split("+")[-1].split("@")[0]
-                return email
-
-            lines = []
-            seen  = set()
-
-            for cf in data.get("component_failures", []):
-                ctype   = cf.get("componentType", "Unknown")
-                name    = cf.get("fullName",       "Unknown")
-                problem = cf.get("problem",        "")[:120].replace('"', "'")
-                path    = resolve(ctype, name)
-                author, email, commit = blame(path)
-                display_email = clean_email(email)
-                key = f"{name}|{author}"
-                if key not in seen:
-                    seen.add(key)
-                    lines.append(f":red_circle: *{name}* ({ctype})\n>_{problem}_\n>Last changed by: *{author}* ({display_email}) — `{commit}`")
-                    print(f"  → {name}: {author} <{email}> [{commit}]")
-
-            for tf in data.get("test_failures", []):
-                name    = tf.get("name",       "Unknown")
-                method  = tf.get("methodName", "")
-                problem = tf.get("message",    "")[:120].replace('"', "'")
-                path    = resolve("ApexClass", name)
-                author, email, commit = blame(path)
-                display_email = clean_email(email)
-                label = f"{name}.{method}" if method else name
-                key   = f"{label}|{author}"
-                if key not in seen:
-                    seen.add(key)
-                    lines.append(f":test_tube: *{label}* (Test)\n>_{problem}_\n>Last changed by: *{author}* ({display_email}) — `{commit}`")
-                    print(f"  → {label}: {author} <{email}> [{commit}]")
-
-            # Write lines to file — one entry per line using a clear separator
-            # Real newlines work fine in the file; we handle BASH_ENV export below
-            text = "\n".join(lines) if lines else "No component details found."
-            with open("/tmp/blame_text.txt", "w") as f:
-                f.write(text)
-            print(f"\n✅ Wrote {len(lines)} blame entry(s) to /tmp/blame_text.txt")
-            PYEOF
-
-              # base64-encode so real newlines survive BASH_ENV
-              if [ -f /tmp/blame_text.txt ]; then
-                BLAME_ENCODED=$(base64 -w 0 /tmp/blame_text.txt 2>/dev/null \
-                  || base64 /tmp/blame_text.txt)
-              else
-                BLAME_ENCODED=$(printf 'No failure details captured.' | base64)
-              fi
-            else
-              BLAME_ENCODED=$(printf 'Pipeline failed before deployment reached Salesforce.' | base64)
-            fi
-
-            # Decode back to real newlines, export safely
-            BLAME_TEXT=$(echo "$BLAME_ENCODED" | base64 --decode 2>/dev/null \
-              || echo "$BLAME_ENCODED" | base64 -d)
-            printf 'export BLAME_TEXT=%q\n' "$BLAME_TEXT" >> $BASH_ENV
-            echo "✅ BLAME_TEXT written to BASH_ENV"
-
-  # ----------------------------------------------------------
-  # FULL SYNC (validate or deploy)
+  # DEPLOY/VALIDATE FULL-SYNC MANIFEST
   # ----------------------------------------------------------
   run-full-sync:
-    parameters:
-      operation:
-        type: enum
-        enum: [deploy, validate]
-        default: deploy
-      test_level:
-        type: enum
-        enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
-        default: RunLocalTests
-    steps:
-      - run:
-          name: Full Manifest
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-            sf project generate manifest --source-dir force-app > /dev/null
+      parameters:
+        operation:
+          type: enum
+          enum: [deploy, validate]
+          default: deploy
+        test_level:                     
+          type: enum
+          enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
+          default: RunLocalTests
+      steps:
+        - run:
+            name: Full Manifest
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
+              sf project generate manifest --source-dir force-app > /dev/null
 
-      - run:
-          name: Full Sync << parameters.operation >>
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
+        - run:
+            name: Full Sync << parameters.operation >>
+            command: |
+              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+              cd "$PROJECT_DIR"
 
-            if [ "<< parameters.operation >>" = "validate" ]; then
-              sf project deploy validate \
-                --manifest package.xml \
-                --target-org target \
-                --test-level << parameters.test_level >> \
-                --wait 360
-            else
-              sf project deploy start \
-                --manifest package.xml \
-                --target-org target \
-                --test-level << parameters.test_level >> \
-                --wait 360
-            fi
+              if [ "<< parameters.operation >>" = "validate" ]; then
+                sf project deploy validate \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level << parameters.test_level >> \
+                  --wait 360
+              else
+                sf project deploy start \
+                  --manifest package.xml \
+                  --target-org target \
+                  --test-level << parameters.test_level >> \
+                  --wait 360
+              fi
 
   # ----------------------------------------------------------
-  # BATCH JOB
+  # RUN BATCH JOB
   # ----------------------------------------------------------
   run-batch-job:
     parameters:
@@ -285,9 +269,11 @@ commands:
           name: Run Batch Job << parameters.batch_job_name >>
           command: |
             if [ "<< parameters.operation >>" != "deploy" ]; then
-              echo "Not a deploy run — skipping batch."
+              echo "Not a deploy run (operation=<< parameters.operation >>). Skipping batch."
               exit 0
             fi
+
+            echo "🚀 Running << parameters.batch_job_name >> in PROD..."
 
             cat > run_batch.apex \<<'APEX'
             Database.executeBatch(new Batch_Initiate_DataDictionary());
@@ -334,8 +320,9 @@ commands:
             else
               echo "⚠️ Deployments found — attempting cancel..."
               for deployId in $DEPLOY_IDS; do
-                echo "⛔ Canceling: $deployId"
-                sf project deploy cancel --job-id "$deployId" 2>&1 || true
+                echo "⛔ Canceling deployment: $deployId"
+                CANCEL_OUTPUT=$(sf project deploy cancel --job-id "$deployId" 2>&1) || true
+                echo "$CANCEL_OUTPUT"
               done
             fi
             true
@@ -344,19 +331,25 @@ commands:
           name: Find Most Recent Tag
           command: |
             TAG_PREFIX="<< parameters.tag_prefix >>"
+            echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
 
             currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
 
             if [ -n "$tags" ]; then
+              echo "🔍 Tags found:"
+              echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then
                   currentRef=$refNum
                 fi
               done
+              echo "Latest tag: ${TAG_PREFIX}${currentRef}"
             else
+              echo "🔍 No tags found — FIRST RUN"
+              currentRef=0
               echo "export FIRST_RUN=true" >> $BASH_ENV
             fi
 
@@ -371,19 +364,25 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
+
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
 
             if [ -s files.txt ]; then
+              echo "Changes detected:"
               cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
             else
-              echo "No changes since last tag."
+              echo "No changes since last tag - Manifest not required."
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
+
+      - find-test-classes:
+          target_env: << parameters.target_env >>
 
       - run:
           name: Deploy Metadata
@@ -393,272 +392,235 @@ commands:
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
 
+            echo "FIRST_RUN=$FIRST_RUN"
+            echo "CHANGES_FOUND=$CHANGES_FOUND"
+            echo "OPERATION=$OPERATION"
+            echo "APEX_CLASSES_CHANGED=$APEX_CLASSES_CHANGED"
+            echo "TEST_CLASSES=$TEST_CLASSES"
+
             if [ "$CHANGES_FOUND" = "true" ]; then
+              echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
             else
               if [ "$FIRST_RUN" = "true" ]; then
+                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
                 DEPLOY_TYPE="FULL_FIRST_RUN"
               else
+                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
                 DEPLOY_TYPE="FULL_NO_TAG"
               fi
               sf project generate manifest --source-dir force-app > /dev/null
             fi
-
+            
             source $BASH_ENV
 
             if [ "$CHANGES_FOUND" = "true" ]; then
               if [ "$APEX_CLASSES_CHANGED" = "true" ]; then
                 if [ -z "$TEST_CLASSES" ]; then
-                  echo "❌ ERROR: Apex classes modified but no test classes found"
+                  echo "❌ ERROR: Apex classes were modified but no test classes were found"
+                  echo "⚠️ Cannot deploy Apex changes without running tests"
                   exit 1
+                else
+                  echo "📋 Running deployment with specified test classes..."
+                  echo "Test classes: $TEST_CLASSES"
+                  
+                  test_args=""
+                  for test_class in $TEST_CLASSES; do
+                    test_args="$test_args --tests $test_class"
+                  done
+                  
+                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --async"
+                  
+                  DEPLOY_OUTPUT=$(sf project deploy start \
+                    --manifest package.xml \
+                    --target-org target \
+                    --test-level RunSpecifiedTests \
+                    $test_args \
+                    --async 2>&1)
+                  
+                  echo "$DEPLOY_OUTPUT"
+                  
+                  DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
+                  
+                  if [ -z "$DEPLOY_ID" ]; then
+                    echo "❌ ERROR: Failed to extract Deploy ID from output"
+                    exit 1
+                  fi
+                  
+                  echo "📝 Deploy ID: $DEPLOY_ID"
+                  echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
                 fi
-                test_args=""
-                for test_class in $TEST_CLASSES; do
-                  test_args="$test_args --tests $test_class"
-                done
-
-                DEPLOY_OUTPUT=$(sf project deploy start \
-                  --manifest package.xml \
-                  --target-org target \
-                  --test-level RunSpecifiedTests \
-                  $test_args \
-                  --async 2>&1)
-
-                echo "$DEPLOY_OUTPUT"
-                DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
               else
+                echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
+                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --async"
+                
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
                   --test-level NoTestRun \
                   --async 2>&1)
-
+                
                 echo "$DEPLOY_OUTPUT"
+                
                 DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
+                
+                if [ -z "$DEPLOY_ID" ]; then
+                  echo "❌ ERROR: Failed to extract Deploy ID from output"
+                  exit 1
+                fi
+                
+                echo "📝 Deploy ID: $DEPLOY_ID"
+                echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
               fi
-
-              if [ -z "$DEPLOY_ID" ]; then
-                echo "❌ ERROR: Failed to extract Deploy ID"
-                exit 1
-              fi
-
-              echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
             fi
 
-      # ──────────────────────────────────────────────────────
+      # --------------------------------------------------------
       # Poll Deployment Status
-      # KEY CHANGE: on failure, writes structured JSON to
-      # /tmp/deploy_failures.json for the git-blame-notify
-      # command to consume.
-      # ──────────────────────────────────────────────────────
+      # NOTE: One addition vs original — on failure, writes
+      # /tmp/deploy_failures.json for git-blame-notify to read.
+      # All original logic is otherwise unchanged.
+      # --------------------------------------------------------
       - run:
           name: Poll Deployment Status
           command: |
             source $BASH_ENV
-
+            
             if [ -z "$DEPLOY_ID" ]; then
-              echo "⚠️ No deployment to poll"
+              echo "⚠️ No deployment to poll (DEPLOY_ID not set)"
               exit 0
             fi
-
+            
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "❌ ERROR: Could not find sfdx-project.json"
+              exit 1
+            fi
             cd "$PROJECT_DIR"
-
+            
             echo "📊 Polling deployment: $DEPLOY_ID"
-            TIMEOUT_SECONDS=$((120 * 60))
+            echo "⏱️  Timeout: 120 minutes"
+            echo ""
+            
+            TIMEOUT_MINUTES=120
+            TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
             POLL_INTERVAL=30
             ELAPSED=0
-            DEPLOY_START=$(date +%s)
-
+            
             while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
-              # Write directly to file — avoids 2>&1 corrupting JSON with stderr warnings
-              sf project deploy report \
-                --job-id "$DEPLOY_ID" \
-                --target-org target \
-                --json > /tmp/report_raw.json 2>/dev/null
-
-              STATUS=$(jq -r '.result.status // "Unknown"'              /tmp/report_raw.json)
-              DONE=$(jq -r '.result.done // false'                       /tmp/report_raw.json)
-              SUCCESS=$(jq -r '.result.success // false'                 /tmp/report_raw.json)
-              COMPONENTS_DEPLOYED=$(jq -r '.result.numberComponentsDeployed // 0' /tmp/report_raw.json)
-              COMPONENTS_TOTAL=$(jq -r '.result.numberComponentsTotal // 0'       /tmp/report_raw.json)
-              TESTS_COMPLETED=$(jq -r '.result.numberTestsCompleted // 0'         /tmp/report_raw.json)
-              TESTS_TOTAL=$(jq -r '.result.numberTestsTotal // 0'                 /tmp/report_raw.json)
-              RUN_TESTS_ENABLED=$(jq -r '.result.runTestsEnabled // false'        /tmp/report_raw.json)
-
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "⏱️  Elapsed: $((ELAPSED / 60)) min | Status: $STATUS"
-              echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
-              if [ "$RUN_TESTS_ENABLED" = "true" ] && [ "$COMPONENTS_DEPLOYED" -eq "$COMPONENTS_TOTAL" ] && [ "$COMPONENTS_TOTAL" -gt 0 ]; then
-                echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
-              fi
-
-              if [ "$DONE" = "true" ]; then
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                if [ "$SUCCESS" = "true" ]; then
-                  echo "✅ Deployment completed successfully!"
-
-                  # ── Capture deploy stats for success Slack message ──
-                  COMP_DEPLOYED=$(jq -r '.result.numberComponentsDeployed // 0' /tmp/report_raw.json)
-                  COMP_TOTAL=$(jq -r '.result.numberComponentsTotal // 0'       /tmp/report_raw.json)
-                  TESTS_RAN=$(jq -r '.result.numberTestsCompleted // 0'         /tmp/report_raw.json)
-                  TESTS_PASS=$(jq -r '.result.numberTestsCompleted // 0'        /tmp/report_raw.json)
-
-                  # Pipeline duration (checkout → now)
-                  PIPELINE_END=$(date +%s)
-                  PIPELINE_START=$(cat /tmp/pipeline_start.txt 2>/dev/null || echo "$PIPELINE_END")
-                  PIPELINE_SECS=$(( PIPELINE_END - PIPELINE_START ))
-                  PIPELINE_MINS=$(( PIPELINE_SECS / 60 ))
-                  PIPELINE_REM=$(( PIPELINE_SECS % 60 ))
-                  PIPELINE_DURATION="${PIPELINE_MINS}m ${PIPELINE_REM}s"
-
-                  # Salesforce deploy-only duration
-                  DEPLOY_END=$(date +%s)
-                  DEPLOY_SECS=$(( DEPLOY_END - DEPLOY_START ))
-                  DEPLOY_MINS=$(( DEPLOY_SECS / 60 ))
-                  DEPLOY_REM=$(( DEPLOY_SECS % 60 ))
-                  DEPLOY_DURATION_STR="${DEPLOY_MINS}m ${DEPLOY_REM}s"
-
-                  DEPLOY_SUMMARY=":stopwatch: *Pipeline:* ${PIPELINE_DURATION}  |  *Deploy:* ${DEPLOY_DURATION_STR}\n:package: *Components:* ${COMP_DEPLOYED}/${COMP_TOTAL} deployed"
-
-                  if [ "$TESTS_RAN" -gt 0 ] 2>/dev/null; then
-                    DEPLOY_SUMMARY="${DEPLOY_SUMMARY}\n:test_tube: *Tests passed:* ${TESTS_PASS}"
-                  fi
-
-                  # base64-encode so real newlines survive BASH_ENV transport
-                  SUMMARY_ENCODED=$(printf '%s' "$DEPLOY_SUMMARY" | base64 -w 0 2>/dev/null \
-                    || printf '%s' "$DEPLOY_SUMMARY" | base64)
-                  DEPLOY_SUMMARY=$(echo "$SUMMARY_ENCODED" | base64 --decode 2>/dev/null \
-                    || echo "$SUMMARY_ENCODED" | base64 -d)
-                  printf 'export DEPLOY_SUMMARY=%q\n' "$DEPLOY_SUMMARY" >> $BASH_ENV
-                  source $BASH_ENV
-                  exit 0
-                fi
-
-                # ── FAILURE: print details and save blame input ──────
-                echo "❌ Deployment failed!"
-                echo ""
-
-                COMPONENT_FAILURES=$(jq -r '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' /tmp/report_raw.json 2>/dev/null)
-                [ -n "$COMPONENT_FAILURES" ] && { echo "🔴 COMPONENT ERRORS:"; echo "$COMPONENT_FAILURES"; echo ""; }
-
-                TEST_FAILURES=$(jq -r '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName): \(.message)"' /tmp/report_raw.json 2>/dev/null)
-                [ -n "$TEST_FAILURES" ] && { echo "🔴 TEST FAILURES:"; echo "$TEST_FAILURES"; echo ""; }
-
-                COVERAGE_WARNINGS=$(jq -r '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' /tmp/report_raw.json 2>/dev/null)
-                [ -n "$COVERAGE_WARNINGS" ] && { echo "🔴 CODE COVERAGE:"; echo "$COVERAGE_WARNINGS"; echo ""; }
-
-                # ── Write structured failure JSON for git-blame-notify ─
-                # /tmp/report_raw.json already written by the sf CLI call above
-                python3 \<<'PYEOF'
-            import json, os
-
-            try:
-                with open("/tmp/report_raw.json") as f:
-                    report = json.load(f)
-            except Exception as e:
-                print(f"❌ Could not parse /tmp/report_raw.json: {e}")
-                with open("/tmp/deploy_failures.json", "w") as f:
-                    json.dump({"component_failures":[],"test_failures":[],"coverage_warnings":[]}, f)
-                raise SystemExit(0)
-
-            result  = report.get("result", {})
-            details = result.get("details", {})
-
-            # componentFailures can be a dict (single) or list (multiple) — normalise both
-            def to_list(val):
-                if val is None:   return []
-                if isinstance(val, list): return val
-                if isinstance(val, dict): return [val]
-                return []
-
-            run_test = details.get("runTestResult", {}) or {}
-
-            output = {
-                "component_failures": to_list(details.get("componentFailures")),
-                "test_failures":      to_list(run_test.get("failures")),
-                "coverage_warnings":  to_list(run_test.get("codeCoverageWarnings")),
-            }
-
-            with open("/tmp/deploy_failures.json", "w") as f:
-                json.dump(output, f, indent=2)
-
-            total = len(output["component_failures"]) + len(output["test_failures"])
-            print(f"📝 Saved {total} failure(s) to /tmp/deploy_failures.json")
-            print(f"   component_failures : {len(output['component_failures'])}")
-            print(f"   test_failures      : {len(output['test_failures'])}")
-            print(f"   coverage_warnings  : {len(output['coverage_warnings'])}")
-            PYEOF
-
-                # Write resolve_path helper so Python subprocess can call it
-                cat > /tmp/resolve_path.sh \<<'BASH'
-            resolve_path() {
-              local COMP_TYPE="$1"
-              local COMP_NAME="$2"
-              local PROJECT_DIR
-              PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-              case "$COMP_TYPE" in
-                ApexClass)              echo "${PROJECT_DIR}/force-app/main/default/classes/${COMP_NAME}.cls" ;;
-                ApexTrigger)            echo "${PROJECT_DIR}/force-app/main/default/triggers/${COMP_NAME}.trigger" ;;
-                LightningComponentBundle) echo "${PROJECT_DIR}/force-app/main/default/lwc/${COMP_NAME}/${COMP_NAME}.js" ;;
-                AuraDefinitionBundle)   echo "${PROJECT_DIR}/force-app/main/default/aura/${COMP_NAME}/${COMP_NAME}.cmp" ;;
-                Flow)                   echo "${PROJECT_DIR}/force-app/main/default/flows/${COMP_NAME}.flow-meta.xml" ;;
-                PermissionSet)          echo "${PROJECT_DIR}/force-app/main/default/permissionsets/${COMP_NAME}.permissionset-meta.xml" ;;
-                Profile)                echo "${PROJECT_DIR}/force-app/main/default/profiles/${COMP_NAME}.profile-meta.xml" ;;
-                CustomObject)           echo "${PROJECT_DIR}/force-app/main/default/objects/${COMP_NAME}/${COMP_NAME}.object-meta.xml" ;;
-                CustomField)
-                  OBJ=$(echo "$COMP_NAME" | cut -d'.' -f1)
-                  FLD=$(echo "$COMP_NAME" | cut -d'.' -f2)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/fields/${FLD}.field-meta.xml" ;;
-                ValidationRule)
-                  OBJ=$(echo "$COMP_NAME" | cut -d'.' -f1)
-                  VR=$(echo "$COMP_NAME" | cut -d'.' -f2)
-                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/validationRules/${VR}.validationRule-meta.xml" ;;
-                *)
-                  find "${PROJECT_DIR}" -type f \( \
-                    -name "${COMP_NAME}.cls" \
-                    -o -name "${COMP_NAME}.trigger" \
-                    -o -name "${COMP_NAME}.js" \
-                    -o -name "${COMP_NAME}.cmp" \
-                    -o -name "${COMP_NAME}.flow-meta.xml" \
-                  \) 2>/dev/null | head -1 ;;
-              esac
-            }
-            BASH
-
-                TOTAL_FAILURES=$(jq -r '.result.numberComponentErrors // 0' /tmp/report_raw.json)
-                TOTAL_TEST_FAILURES=$(jq -r '.result.numberTestErrors // 0' /tmp/report_raw.json)
-
-                # Pipeline duration (checkout → now)
-                PIPELINE_END=$(date +%s)
-                PIPELINE_START=$(cat /tmp/pipeline_start.txt 2>/dev/null || echo "$PIPELINE_END")
-                PIPELINE_SECS=$(( PIPELINE_END - PIPELINE_START ))
-                PIPELINE_MINS=$(( PIPELINE_SECS / 60 ))
-                PIPELINE_REM=$(( PIPELINE_SECS % 60 ))
-                PIPELINE_DURATION="${PIPELINE_MINS}m ${PIPELINE_REM}s"
-
-                # Salesforce deploy-only duration
-                DEPLOY_END=$(date +%s)
-                DEPLOY_SECS=$(( DEPLOY_END - DEPLOY_START ))
-                DEPLOY_MINS=$(( DEPLOY_SECS / 60 ))
-                DEPLOY_REM=$(( DEPLOY_SECS % 60 ))
-                DEPLOY_DURATION_STR="${DEPLOY_MINS}m ${DEPLOY_REM}s"
-
-                DURATION_STR="*Pipeline:* ${PIPELINE_DURATION}  |  *Deploy:* ${DEPLOY_DURATION_STR}"
-                printf 'export DEPLOY_DURATION=%q\n' "$DURATION_STR" >> $BASH_ENV
-
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "📊 SUMMARY: Component Errors=$TOTAL_FAILURES | Test Failures=$TOTAL_TEST_FAILURES | Time=${DURATION_STR}"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --target-org target --json 2>&1)
+              
+              if [ $? -ne 0 ]; then
+                echo "❌ Error getting deployment status:"
+                echo "$REPORT_JSON"
                 exit 1
               fi
+              
+              STATUS=$(echo "$REPORT_JSON" | jq -r '.result.status // "Unknown"')
+              DONE=$(echo "$REPORT_JSON" | jq -r '.result.done // false')
+              SUCCESS=$(echo "$REPORT_JSON" | jq -r '.result.success // false')
+              COMPONENTS_DEPLOYED=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsDeployed // 0')
+              COMPONENTS_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentsTotal // 0')
+              TESTS_COMPLETED=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsCompleted // 0')
+              TESTS_TOTAL=$(echo "$REPORT_JSON" | jq -r '.result.numberTestsTotal // 0')
+              RUN_TESTS_ENABLED=$(echo "$REPORT_JSON" | jq -r '.result.runTestsEnabled // false')
+              
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "⏱️  Elapsed: $((ELAPSED / 60)) min | Status: $STATUS"
+              echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
+              
+              if [ "$RUN_TESTS_ENABLED" = "true" ] && [ $COMPONENTS_DEPLOYED -eq $COMPONENTS_TOTAL ] && [ $COMPONENTS_TOTAL -gt 0 ]; then
+                echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
+              fi
+              
+              if [ "$DONE" = "true" ]; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                
+                if [ "$SUCCESS" = "true" ]; then
+                  echo "✅ Deployment completed successfully!"
+                  exit 0
+                else
+                  echo "❌ Deployment failed!"
+                  echo ""
+                  
+                  COMPONENT_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' 2>/dev/null)
+                  if [ -n "$COMPONENT_FAILURES" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 COMPONENT ERRORS:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$COMPONENT_FAILURES"
+                    echo ""
+                  fi
+                  
+                  TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName):\n     \(.message)\n     \(.stackTrace // "No stack trace")"' 2>/dev/null)
+                  if [ -n "$TEST_FAILURES" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 TEST FAILURES:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$TEST_FAILURES"
+                    echo ""
+                  fi
+                  
+                  COVERAGE_WARNINGS=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' 2>/dev/null)
+                  if [ -n "$COVERAGE_WARNINGS" ]; then
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "🔴 CODE COVERAGE FAILURES:"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "$COVERAGE_WARNINGS"
+                    echo ""
+                  fi
+                  
+                  TOTAL_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentErrors // 0')
+                  TOTAL_TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
+                  
+                  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                  echo "📊 FAILURE SUMMARY:"
+                  echo "   Component Errors: $TOTAL_FAILURES"
+                  echo "   Test Failures: $TOTAL_TEST_FAILURES"
+                  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+                  # ── NEW: save clean failure JSON for git-blame-notify ──
+                  # Uses a fresh sf call (no 2>&1) so Python gets valid JSON
+                  sf project deploy report \
+                    --job-id "$DEPLOY_ID" \
+                    --target-org target \
+                    --json > /tmp/report_raw.json 2>/dev/null || true
+
+                  python3 \<<'PYEOF'
+import json
+try:
+    with open("/tmp/report_raw.json") as f:
+        r = json.load(f)
+    d = r.get("result", {}).get("details", {})
+    def lst(v):
+        if not v: return []
+        return v if isinstance(v, list) else [v]
+    rt = d.get("runTestResult") or {}
+    with open("/tmp/deploy_failures.json", "w") as f:
+        json.dump({
+            "component_failures": lst(d.get("componentFailures")),
+            "test_failures":      lst(rt.get("failures")),
+        }, f, indent=2)
+    print("📝 Saved failure data for git blame")
+except Exception as e:
+    print(f"⚠️  Could not save failure data: {e}")
+PYEOF
+                  # ── END NEW ────────────────────────────────────────────
+
+                  exit 1
+                fi
+              fi
+              
               sleep $POLL_INTERVAL
               ELAPSED=$((ELAPSED + POLL_INTERVAL))
             done
-
-            echo "⏱️  Timeout after 120 minutes — last status: $STATUS"
+            
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⏱️  Deployment timeout reached after $TIMEOUT_MINUTES minutes"
+            echo "📊 Last known status: $STATUS"
+            echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
+            if [ "$RUN_TESTS_ENABLED" = "true" ]; then
+              echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
+            fi
             exit 1
 
       - run:
@@ -670,40 +632,163 @@ commands:
             TAG_PREFIX="<< parameters.tag_prefix >>"
 
             if [ "$OPERATION" = "validate" ]; then
-              echo "Validation run — no tag."
+              echo "Validation run — no tag creation."
               exit 0
             fi
 
             if [ "$CREATE_TAGS" != "true" ]; then
-              echo "Tag creation disabled."
+              echo "Tag creation disabled (create_tags=false)."
               exit 0
             fi
 
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
-              newTag="${TAG_PREFIX}$( [ "$FIRST_RUN" = "true" ] && echo 1 || echo $((CURRENT_REF + 1)) )"
+
+              if [ "$FIRST_RUN" = "true" ]; then
+                newTag="${TAG_PREFIX}1"
+              else
+                newTag="${TAG_PREFIX}$((CURRENT_REF + 1))"
+              fi
+
               git config user.email "circleci@cargurus.com"
               git config user.name "CircleCI"
               git tag "$newTag"
               git push origin "$newTag"
               echo "✔️ Created tag: $newTag"
+            else
+              echo "No changes — skipping tag creation."
             fi
 
   # ----------------------------------------------------------
-  # SLACK NOTIFY — SUCCESS
-  # Single reusable command called from every job.
-  # DEPLOY_SUMMARY is base64-safe-exported by Poll step.
+  # GIT BLAME NOTIFY
+  # Runs on_fail only. Reads /tmp/deploy_failures.json (written
+  # by Poll step), resolves each component to its repo file,
+  # runs git log to find the last author, and exports BLAME_TEXT
+  # to BASH_ENV for the slack-notify-fail custom template.
+  # ----------------------------------------------------------
+  git-blame-notify:
+    steps:
+      - run:
+          name: "🔍 Git Blame — Collect Failed Component Owners"
+          when: on_fail
+          command: |
+            git fetch --unshallow 2>/dev/null || true
+
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+
+            if [ ! -f /tmp/deploy_failures.json ]; then
+              echo "⚠️  No failure data found — pipeline may have failed before deployment"
+              printf 'export BLAME_TEXT=%q\n' "No component failure details captured." >> $BASH_ENV
+              exit 0
+            fi
+
+            python3 \<<'PYEOF'
+import json, os, subprocess
+
+PROJECT_DIR = subprocess.check_output(
+    "find . -name sfdx-project.json -exec dirname {} \\; | head -1",
+    shell=True, stderr=subprocess.DEVNULL
+).decode().strip()
+
+TYPE_MAP = {
+    "ApexClass":                lambda n: f"{PROJECT_DIR}/force-app/main/default/classes/{n}.cls",
+    "ApexTrigger":              lambda n: f"{PROJECT_DIR}/force-app/main/default/triggers/{n}.trigger",
+    "LightningComponentBundle": lambda n: f"{PROJECT_DIR}/force-app/main/default/lwc/{n}/{n}.js",
+    "AuraDefinitionBundle":     lambda n: f"{PROJECT_DIR}/force-app/main/default/aura/{n}/{n}.cmp",
+    "Flow":                     lambda n: f"{PROJECT_DIR}/force-app/main/default/flows/{n}.flow-meta.xml",
+    "PermissionSet":            lambda n: f"{PROJECT_DIR}/force-app/main/default/permissionsets/{n}.permissionset-meta.xml",
+    "Profile":                  lambda n: f"{PROJECT_DIR}/force-app/main/default/profiles/{n}.profile-meta.xml",
+}
+
+def resolve(ctype, name):
+    fn = TYPE_MAP.get(ctype)
+    if fn:
+        p = fn(name)
+        if os.path.isfile(p):
+            return p
+    # fallback: search by filename
+    r = subprocess.run(
+        f'find {PROJECT_DIR} -type f \\( -name "{name}.cls" -o -name "{name}.trigger" -o -name "{name}.js" \\)',
+        shell=True, capture_output=True, text=True
+    )
+    return r.stdout.strip().split("\n")[0]
+
+def git_log(filepath):
+    """Return (author_name, display_email, short_hash) for last commit on file."""
+    if not filepath or not os.path.isfile(filepath):
+        return "unknown", "unknown", "?"
+    try:
+        out = subprocess.check_output(
+            ["git", "log", "--follow", "-n", "1", "--format=%an|%ae|%h", "--", filepath],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        if out:
+            name, email, commit = out.split("|", 2)
+            # Clean up GitHub noreply addresses → show just the username
+            if "noreply.github.com" in email:
+                email = email.split("+")[-1].split("@")[0]
+            return name, email, commit
+    except Exception:
+        pass
+    return "unknown", "unknown", "?"
+
+with open("/tmp/deploy_failures.json") as f:
+    data = json.load(f)
+
+lines = []
+seen  = set()
+
+for cf in data.get("component_failures", []):
+    ctype   = cf.get("componentType", "Unknown")
+    name    = cf.get("fullName",      "Unknown")
+    problem = cf.get("problem",       "")[:150].replace('"', "'")
+    path    = resolve(ctype, name)
+    author, email, commit = git_log(path)
+    key = f"{name}|{commit}"
+    if key not in seen:
+        seen.add(key)
+        lines.append(f":red_circle: *{name}* ({ctype})\n>_{problem}_\n>Last changed by: *{author}* ({email}) \u2014 `{commit}`")
+        print(f"  → {name}: {author} ({email}) [{commit}]")
+
+for tf in data.get("test_failures", []):
+    name   = tf.get("name",       "Unknown")
+    method = tf.get("methodName", "")
+    problem = tf.get("message",   "")[:150].replace('"', "'")
+    path   = resolve("ApexClass", name)
+    author, email, commit = git_log(path)
+    label = f"{name}.{method}" if method else name
+    key   = f"{label}|{commit}"
+    if key not in seen:
+        seen.add(key)
+        lines.append(f":test_tube: *{label}* (Test)\n>_{problem}_\n>Last changed by: *{author}* ({email}) \u2014 `{commit}`")
+        print(f"  → {label}: {author} ({email}) [{commit}]")
+
+text = "\n".join(lines) if lines else "No component details found."
+
+# base64-encode so real newlines survive BASH_ENV export
+import base64
+encoded = base64.b64encode(text.encode()).decode()
+with open("/tmp/blame_encoded.txt", "w") as f:
+    f.write(encoded)
+print(f"✅ Wrote {len(lines)} blame entry(s)")
+PYEOF
+
+            # Decode back to real newlines and export
+            if [ -f /tmp/blame_encoded.txt ]; then
+              BLAME_TEXT=$(cat /tmp/blame_encoded.txt | base64 --decode 2>/dev/null \
+                || cat /tmp/blame_encoded.txt | base64 -d)
+            else
+              BLAME_TEXT="No component failure details captured."
+            fi
+            printf 'export BLAME_TEXT=%q\n' "$BLAME_TEXT" >> $BASH_ENV
+            echo "✅ BLAME_TEXT exported to BASH_ENV"
+
+  # ----------------------------------------------------------
+  # SLACK NOTIFY — SUCCESS (reusable, called from every job)
   # ----------------------------------------------------------
   slack-notify-pass:
     steps:
-      - run:
-          name: "Prepare success Slack payload"
-          when: on_success
-          command: |
-            # Decode DEPLOY_SUMMARY back to real newlines for Slack mrkdwn
-            DEPLOY_SUMMARY_DECODED=$(printf '%s' "$DEPLOY_SUMMARY" | sed 's/\\n/\n/g')
-            printf 'export DEPLOY_SUMMARY_DECODED=%q\n' "$DEPLOY_SUMMARY_DECODED" >> $BASH_ENV
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
@@ -725,11 +810,6 @@ commands:
                 },
                 { "type": "divider" },
                 {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
                   "type": "actions",
                   "elements": [
                     {
@@ -744,9 +824,8 @@ commands:
             }
 
   # ----------------------------------------------------------
-  # SLACK NOTIFY — FAILURE
-  # Single reusable command called from every job.
-  # BLAME_TEXT and DEPLOY_DURATION exported by poll + blame steps.
+  # SLACK NOTIFY — FAILURE (reusable, called from every job)
+  # Reads BLAME_TEXT exported by git-blame-notify.
   # ----------------------------------------------------------
   slack-notify-fail:
     steps:
@@ -767,12 +846,6 @@ commands:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
@@ -800,7 +873,7 @@ commands:
 # ============================================================
 jobs:
   # ----------------------------------------------------------
-  # INTQA AUTO DEPLOY (webhook — PR merge to BRInt)
+  # INTQA FULL SYNC - Auto Deploy with tags on PR merge to BRInt
   # ----------------------------------------------------------
   auto-deploy-intqa:
     parameters:
@@ -813,7 +886,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -826,13 +899,12 @@ jobs:
           target_env: INTQA
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
-      # ── Git blame runs first on failure, then fallback generic notify ──
       - git-blame-notify
       - slack-notify-pass
       - slack-notify-fail
 
   # ----------------------------------------------------------
-  # STAGINGUAT AUTO DEPLOY
+  # STAGINGUAT FULL SYNC - Auto Deploy with tags on PR merge to BRStaging
   # ----------------------------------------------------------
   auto-deploy-staging:
     parameters:
@@ -845,7 +917,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -863,7 +935,7 @@ jobs:
       - slack-notify-fail
 
   # ----------------------------------------------------------
-  # INTQA FULL SYNC
+  # INTQA FULL SYNC - Validate or Deploy (Manual/API only)
   # ----------------------------------------------------------
   intqa-full-sync:
     parameters:
@@ -875,7 +947,7 @@ jobs:
         type: enum
         enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
         default: RunLocalTests
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -894,7 +966,7 @@ jobs:
       - slack-notify-fail
 
   # ----------------------------------------------------------
-  # STAGINGUAT FULL SYNC
+  # STAGING UAT FULL SYNC - Validate or Deploy (Manual/API only)
   # ----------------------------------------------------------
   staginguat-full-sync:
     parameters:
@@ -906,7 +978,7 @@ jobs:
         type: enum
         enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
         default: RunLocalTests
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -922,7 +994,7 @@ jobs:
       - slack-notify-fail
 
   # ----------------------------------------------------------
-  # PRODUCTION FULL SYNC
+  # PRODUCTION FULL SYNC - Validate or Deploy (Manual/API only)
   # ----------------------------------------------------------
   prod-full-sync:
     parameters:
@@ -930,7 +1002,7 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: validate
-    resource_class: large
+    resource_class: xlarge
     docker:
       - image: cimg/node:20.10
     steps:
@@ -948,7 +1020,7 @@ jobs:
       - slack-notify-fail
 
 # ============================================================
-# WORKFLOWS  (unchanged from original)
+# WORKFLOWS
 # ============================================================
 workflows:
   version: 2
@@ -960,11 +1032,11 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: deploy-BRInt-full-sync
-          context: sf-intqa
-          operation: deploy
-          test_level: << pipeline.parameters.test_level >>
+        - intqa-full-sync:
+            name: deploy-BRInt-full-sync
+            context: sf-intqa
+            operation: deploy
+            test_level: << pipeline.parameters.test_level >>
 
   scheduled-StagingUat-deploy:
     when:
@@ -973,11 +1045,11 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: deploy-BRStaging-full-sync
-          context: sf-staging
-          operation: deploy
-          test_level: << pipeline.parameters.test_level >>
+        - staginguat-full-sync:
+            name: deploy-BRStaging-full-sync
+            context: sf-staging
+            operation: deploy
+            test_level: << pipeline.parameters.test_level >>
 
   scheduled-IntQa-validate:
     when:
@@ -986,11 +1058,11 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: validate-BRInt
-          context: sf-intqa
-          operation: validate
-          test_level: << pipeline.parameters.test_level >>
+        - intqa-full-sync:
+            name: validate-BRInt
+            context: sf-intqa
+            operation: validate
+            test_level: << pipeline.parameters.test_level >>
 
   scheduled-StagingUat-validate:
     when:
@@ -999,11 +1071,11 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: validate-BRStaging
-          context: sf-staging
-          operation: validate
-          test_level: << pipeline.parameters.test_level >>
+        - staginguat-full-sync:
+            name: validate-BRStaging
+            context: sf-staging
+            operation: validate
+            test_level: << pipeline.parameters.test_level >>
 
   scheduled-Prod-validate:
     when:
@@ -1012,23 +1084,23 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - prod-full-sync:
-          name: validate-main
-          context: sf-prod
-          operation: validate
+        - prod-full-sync:
+            name: validate-main
+            context: sf-prod
+            operation: validate
 
   Auto-IntQa-Deploy:
     when:
       and:
         - equal: [ webhook, << pipeline.trigger_source >> ]
-        - equal: [ BRInt, << pipeline.git.branch >> ]
+        - equal: [ BRInt , << pipeline.git.branch >> ]
     jobs:
-      - auto-deploy-intqa:
-          name: auto-deploy-BRInt
-          context: sf-intqa
-          tag_prefix: "INTQA-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-intqa:
+            name: auto-deploy-BRInt
+            context: sf-intqa
+            tag_prefix: "INTQA-"
+            operation: deploy
+            create_tags: true
 
   Auto-StagingUat-Deploy:
     when:
@@ -1036,12 +1108,12 @@ workflows:
         - equal: [ webhook, << pipeline.trigger_source >> ]
         - equal: [ BRStaging, << pipeline.git.branch >> ]
     jobs:
-      - auto-deploy-staging:
-          name: auto-deploy-BRStaging
-          context: sf-staging
-          tag_prefix: "STAGINGUAT-"
-          operation: deploy
-          create_tags: true
+        - auto-deploy-staging:
+            name: auto-deploy-BRStaging
+            context: sf-staging
+            tag_prefix: "STAGINGUAT-"
+            operation: deploy
+            create_tags: true
 
   Manual-IntQa-Deploy:
     when:
@@ -1050,11 +1122,11 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: deploy-BRInt-full-sync
-          context: sf-intqa
-          operation: deploy
-          test_level: << pipeline.parameters.test_level >>
+        - intqa-full-sync:
+            name: deploy-BRInt-full-sync
+            context: sf-intqa
+            operation: deploy
+            test_level: << pipeline.parameters.test_level >>
 
   Manual-IntQa-Validate:
     when:
@@ -1063,11 +1135,11 @@ workflows:
         - equal: [ BRInt, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - intqa-full-sync:
-          name: validate-BRInt
-          context: sf-intqa
-          operation: validate
-          test_level: << pipeline.parameters.test_level >>
+        - intqa-full-sync:
+            name: validate-BRInt
+            context: sf-intqa
+            operation: validate
+            test_level: << pipeline.parameters.test_level >>
 
   Manual-StagingUat-Deploy:
     when:
@@ -1076,11 +1148,11 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: deploy-BRStaging-full-sync
-          context: sf-staging
-          operation: deploy
-          test_level: << pipeline.parameters.test_level >>
+        - staginguat-full-sync:
+            name: deploy-BRStaging-full-sync
+            context: sf-staging
+            operation: deploy
+            test_level: << pipeline.parameters.test_level >>
 
   Manual-StagingUat-Validate:
     when:
@@ -1089,11 +1161,11 @@ workflows:
         - equal: [ BRStaging, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - staginguat-full-sync:
-          name: validate-BRStaging
-          context: sf-staging
-          operation: validate
-          test_level: << pipeline.parameters.test_level >>
+        - staginguat-full-sync:
+            name: validate-BRStaging
+            context: sf-staging
+            operation: validate
+            test_level: << pipeline.parameters.test_level >>
 
   Manual-Prod-Deploy:
     when:
@@ -1102,10 +1174,10 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ deploy, << pipeline.parameters.action_type >> ]
     jobs:
-      - prod-full-sync:
-          name: deploy-main-full-sync
-          context: sf-prod
-          operation: deploy
+        - prod-full-sync:
+            name: deploy-main-full-sync
+            context: sf-prod
+            operation: deploy
 
   Manual-Prod-Validate:
     when:
@@ -1114,7 +1186,7 @@ workflows:
         - equal: [ main, << pipeline.git.branch >> ]
         - equal: [ validate, << pipeline.parameters.action_type >> ]
     jobs:
-      - prod-full-sync:
-          name: validate-main
-          context: sf-prod
-          operation: validate
+        - prod-full-sync:
+            name: validate-main
+            context: sf-prod
+            operation: validate
