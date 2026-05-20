@@ -40,135 +40,6 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # Find Test Classes from GitHub Repository Coverage Map
-  # ----------------------------------------------------------
-  find-test-classes:
-    parameters:
-      target_env:
-        type: string
-    steps:
-      - run:
-          name: Download Coverage Map from Repository
-          command: |
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            echo "🔍 Downloading test coverage map for << parameters.target_env >>..."
-
-            REPO_URL="${MAPPINGS_REPO_URL}"
-            FILENAME="${COVERAGE_MAP_FILENAME}"
-
-            if [ -z "$REPO_URL" ]; then
-              echo "❌ Error: MAPPINGS_REPO_URL not set"
-              exit 1
-            fi
-            if [ -z "$FILENAME" ]; then
-              echo "❌ Error: COVERAGE_MAP_FILENAME not set"
-              exit 1
-            fi
-
-            COVERAGE_URL="https://raw.githubusercontent.com/${REPO_URL}/main/JSON/${FILENAME}"
-            echo "📍 Fetching from: $COVERAGE_URL"
-
-            AUTH_HEADER=""
-            if [ -n "$GITHUB_TEST_TOKEN" ]; then
-              AUTH_HEADER="Authorization: token $GITHUB_TEST_TOKEN"
-              echo "🔑 Using GITHUB_TEST_TOKEN"
-            else
-              echo "⚠️ No GITHUB_TEST_TOKEN set"
-            fi
-
-            if curl -f -s -H "$AUTH_HEADER" "$COVERAGE_URL" -o coverage-map.json 2>/dev/null; then
-              if [ -f "coverage-map.json" ] && [ -s "coverage-map.json" ]; then
-                echo "✅ Coverage map downloaded ($(wc -c < coverage-map.json) bytes)"
-                echo "export MAP_DOWNLOADED=true" >> $BASH_ENV
-              else
-                echo "❌ Coverage map empty or missing"
-                exit 1
-              fi
-            else
-              echo "❌ HTTP request failed"
-              exit 1
-            fi
-
-      - run:
-          name: Determine Required Test Classes
-          command: |
-            source $BASH_ENV
-            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
-            cd "$PROJECT_DIR"
-
-            if [ -f "files.txt" ]; then
-              echo "🔍 Finding changed Apex classes..."
-              changed_classes=$(cat files.txt | grep -E '^force-app/.*classes/.*\.cls$' | grep -v '.*-meta\.xml$' | sed 's/.*classes\///' | sed 's/\.cls$//' || true)
-              if [ -n "$changed_classes" ]; then
-                echo "📝 Changed Apex classes:"
-                echo "$changed_classes"
-                echo "$changed_classes" > changed_classes.txt
-                echo "export APEX_CLASSES_CHANGED=true" >> $BASH_ENV
-              else
-                echo "ℹ️ No Apex classes changed"
-                echo "" > changed_classes.txt
-                echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
-              fi
-            else
-              echo "⚠️ files.txt not found"
-              echo "" > changed_classes.txt
-              echo "export APEX_CLASSES_CHANGED=false" >> $BASH_ENV
-            fi
-
-            test_classes=""
-
-            if [ "$MAP_DOWNLOADED" = "true" ] && [ -f "coverage-map.json" ] && [ -s "changed_classes.txt" ]; then
-              echo ""
-              echo "🔍 PRONG 1: Looking up test classes in coverage map..."
-              while IFS= read -r class_name; do
-                [ -z "$class_name" ] && continue
-                class_name_only=$(echo "$class_name" | sed 's|.*/||' | xargs)
-                mapped_tests=$(jq -r --arg cn "$class_name_only" '.coverage[$cn].Tests[]?' coverage-map.json 2>/dev/null || true)
-                if [ -n "$mapped_tests" ]; then
-                  echo "  ✓ Found tests for $class_name"
-                  test_classes="$test_classes $mapped_tests"
-                else
-                  echo "  ⚠️ No mapping for $class_name"
-                fi
-              done < changed_classes.txt
-            fi
-
-            if [ -s "changed_classes.txt" ]; then
-              echo ""
-              echo "🔍 PRONG 2: Scanning for test-named classes..."
-              name_based_tests=$(cat changed_classes.txt | grep -i "test" | sed 's|.*/||' || true)
-              if [ -n "$name_based_tests" ]; then
-                echo "  ✓ Found by name"
-                test_classes="$test_classes $name_based_tests"
-              fi
-            fi
-
-            if [ -f "package.xml" ]; then
-              echo ""
-              echo "🔍 PRONG 3: Scanning package.xml..."
-              package_tests=$(grep -oP '<members>\K[^<]+(?=</members>)' package.xml | grep -i "test" || true)
-              if [ -n "$package_tests" ]; then
-                echo "  ✓ Found in package.xml"
-                test_classes="$test_classes $package_tests"
-              fi
-            fi
-
-            final_test_classes=$(echo "$test_classes" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/^ *//;s/ *$//')
-
-            echo ""
-            echo "📋 Final test classes:"
-            if [ -n "$final_test_classes" ]; then
-              echo "$final_test_classes" | tr ' ' '\n' | while read -r t; do [ -n "$t" ] && echo "  - $t"; done
-              echo "export TEST_CLASSES='$final_test_classes'" >> $BASH_ENV
-            else
-              echo "  ⚠️ None found"
-              echo "export TEST_CLASSES=''" >> $BASH_ENV
-            fi
-
-            rm -f coverage-map.json changed_classes.txt
 
   # ----------------------------------------------------------
   # JWT AUTH COMMAND
@@ -749,7 +620,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: xlarge
+    resource_class: large
     docker:
       - image: cimg/node:20.10
     steps:
@@ -780,7 +651,7 @@ jobs:
       create_tags:
         type: boolean
         default: true
-    resource_class: xlarge
+    resource_class: large
     docker:
       - image: cimg/node:20.10
     steps:
@@ -810,7 +681,7 @@ jobs:
         type: enum
         enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
         default: RunLocalTests
-    resource_class: xlarge
+    resource_class: large
     docker:
       - image: cimg/node:20.10
     steps:
@@ -841,7 +712,7 @@ jobs:
         type: enum
         enum: [RunLocalTests, RunAllTestsInOrg, NoTestRun, RunSpecifiedTests]
         default: RunLocalTests
-    resource_class: xlarge
+    resource_class: large
     docker:
       - image: cimg/node:20.10
     steps:
@@ -865,7 +736,7 @@ jobs:
         type: enum
         enum: [deploy, validate]
         default: validate
-    resource_class: xlarge
+    resource_class: large
     docker:
       - image: cimg/node:20.10
     steps:
