@@ -43,7 +43,6 @@ commands:
   # ----------------------------------------------------------
   # Find Test Classes from GitHub Repository Coverage Map
   # ----------------------------------------------------------
-  
 
   # ----------------------------------------------------------
   # JWT AUTH COMMAND
@@ -223,7 +222,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-       
+ 
 
       - run:
           name: Deploy Metadata
@@ -263,7 +262,7 @@ commands:
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level RunSpecifiedTests \
                   $test_args \
                   --async 2>&1)
               else
@@ -271,7 +270,7 @@ commands:
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level NoTestRun \
                   --async 2>&1)
               fi
 
@@ -484,25 +483,32 @@ commands:
             while [ "$i" -lt "$COMP_COUNT" ]; do
               CTYPE=$(jq -r ".component_failures[$i].componentType // \"Unknown\"" /tmp/deploy_failures.json)
               NAME=$(jq -r  ".component_failures[$i].fullName // \"Unknown\""      /tmp/deploy_failures.json)
-              PROB=$(jq -r  ".component_failures[$i].problem // \"\"" /tmp/deploy_failures.json | cut -c1-150 | tr '"' "'")
+              PROB=$(jq -r  ".component_failures[$i].problem // \"\"" /tmp/deploy_failures.json | cut -c1-200 | tr '"' "'")
+              LINE_NO=$(jq -r ".component_failures[$i].lineNumber // \"\""         /tmp/deploy_failures.json)
+              COL_NO=$(jq -r  ".component_failures[$i].columnNumber // \"\""       /tmp/deploy_failures.json)
               FILEPATH=$(resolve_path "$CTYPE" "$NAME")
               BLAME=$(run_git_blame "$FILEPATH")
               AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
               EMAIL=$(echo  "$BLAME" | cut -d'|' -f2)
               COMMIT=$(echo "$BLAME" | cut -d'|' -f3)
               echo "  → $NAME ($CTYPE): $AUTHOR <$EMAIL> [$COMMIT]"
-              # printf writes actual newline chars — Slack renders these correctly
-              printf ':red_circle: *%s* (%s)\n>_%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
-                "$NAME" "$CTYPE" "$PROB" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
+              # Build location string if line number is available
+              LOCATION=""
+              [ -n "$LINE_NO" ] && [ "$LINE_NO" != "null" ] && LOCATION=" — line ${LINE_NO}"
+              [ -n "$COL_NO"  ] && [ "$COL_NO"  != "null" ] && LOCATION="${LOCATION}, col ${COL_NO}"
+              printf ':red_circle: *%s* (%s)\n>_%s%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
+                "$NAME" "$CTYPE" "$PROB" "$LOCATION" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
               i=$((i + 1))
             done
 
             TEST_COUNT=$(jq '.test_failures | length' /tmp/deploy_failures.json 2>/dev/null || echo 0)
             i=0
             while [ "$i" -lt "$TEST_COUNT" ]; do
-              NAME=$(jq -r   ".test_failures[$i].name // \"Unknown\""   /tmp/deploy_failures.json)
-              METHOD=$(jq -r ".test_failures[$i].methodName // \"\"" /tmp/deploy_failures.json)
-              PROB=$(jq -r   ".test_failures[$i].message // \"\"" /tmp/deploy_failures.json | cut -c1-150 | tr '"' "'")
+              NAME=$(jq -r    ".test_failures[$i].name // \"Unknown\""        /tmp/deploy_failures.json)
+              METHOD=$(jq -r  ".test_failures[$i].methodName // \"\"" /tmp/deploy_failures.json)
+              PROB=$(jq -r    ".test_failures[$i].message // \"\"" /tmp/deploy_failures.json | cut -c1-200 | tr '"' "'")
+              # Extract first line of stack trace (most useful: the line/column reference)
+              STACK=$(jq -r   ".test_failures[$i].stackTrace // \"\"" /tmp/deploy_failures.json                 | head -1 | cut -c1-120 | tr '"' "'")
               FILEPATH=$(resolve_path "ApexClass" "$NAME")
               BLAME=$(run_git_blame "$FILEPATH")
               AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
@@ -511,8 +517,13 @@ commands:
               LABEL="$NAME"
               [ -n "$METHOD" ] && LABEL="${NAME}.${METHOD}"
               echo "  → $LABEL (Test): $AUTHOR <$EMAIL> [$COMMIT]"
-              printf ':test_tube: *%s* (Test)\n>_%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
-                "$LABEL" "$PROB" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
+              if [ -n "$STACK" ] && [ "$STACK" != "null" ]; then
+                printf ':test_tube: *%s* (Test)\n>_%s_\n>`%s`\n>Last changed by: *%s* (%s) — `%s`\n' \
+                  "$LABEL" "$PROB" "$STACK" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
+              else
+                printf ':test_tube: *%s* (Test)\n>_%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
+                  "$LABEL" "$PROB" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
+              fi
               i=$((i + 1))
             done
 
