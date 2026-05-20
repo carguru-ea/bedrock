@@ -389,7 +389,7 @@ commands:
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunSpecifiedTests \
+                  --test-level RunLocalTests \
                   $test_args \
                   --async 2>&1)
               else
@@ -397,7 +397,7 @@ commands:
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level NoTestRun \
+                  --test-level RunLocalTests \
                   --async 2>&1)
               fi
 
