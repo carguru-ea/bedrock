@@ -463,6 +463,7 @@ commands:
             TIMEOUT_SECONDS=$((120 * 60))
             POLL_INTERVAL=30
             ELAPSED=0
+            DEPLOY_START=$(date +%s)
 
             while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
               # Write directly to file — avoids 2>&1 corrupting JSON with stderr warnings
@@ -492,6 +493,28 @@ commands:
 
                 if [ "$SUCCESS" = "true" ]; then
                   echo "✅ Deployment completed successfully!"
+
+                  # ── Capture deploy stats for success Slack message ──
+                  COMP_DEPLOYED=$(jq -r '.result.numberComponentsDeployed // 0' /tmp/report_raw.json)
+                  COMP_TOTAL=$(jq -r '.result.numberComponentsTotal // 0'       /tmp/report_raw.json)
+                  TESTS_RAN=$(jq -r '.result.numberTestsCompleted // 0'         /tmp/report_raw.json)
+                  TESTS_PASS=$(jq -r '.result.numberTestsCompleted // 0'        /tmp/report_raw.json)
+
+                  # Compute human-readable duration
+                  DEPLOY_END=$(date +%s)
+                  DURATION_SECS=$(( DEPLOY_END - DEPLOY_START ))
+                  DURATION_MINS=$(( DURATION_SECS / 60 ))
+                  DURATION_REMAINDER=$(( DURATION_SECS % 60 ))
+                  DURATION_STR="${DURATION_MINS}m ${DURATION_REMAINDER}s"
+
+                  DEPLOY_SUMMARY=":stopwatch: *Time taken:* ${DURATION_STR}\n:package: *Components:* ${COMP_DEPLOYED}/${COMP_TOTAL} deployed"
+
+                  if [ "$TESTS_RAN" -gt 0 ] 2>/dev/null; then
+                    DEPLOY_SUMMARY="${DEPLOY_SUMMARY}\n:test_tube: *Tests passed:* ${TESTS_PASS}"
+                  fi
+
+                  printf 'export DEPLOY_SUMMARY=%q\n' "$DEPLOY_SUMMARY" >> $BASH_ENV
+                  source $BASH_ENV
                   exit 0
                 fi
 
@@ -588,8 +611,17 @@ commands:
 
                 TOTAL_FAILURES=$(jq -r '.result.numberComponentErrors // 0' /tmp/report_raw.json)
                 TOTAL_TEST_FAILURES=$(jq -r '.result.numberTestErrors // 0' /tmp/report_raw.json)
+
+                # Compute duration for failure Slack message
+                DEPLOY_END=$(date +%s)
+                DURATION_SECS=$(( DEPLOY_END - DEPLOY_START ))
+                DURATION_MINS=$(( DURATION_SECS / 60 ))
+                DURATION_REMAINDER=$(( DURATION_SECS % 60 ))
+                DURATION_STR="${DURATION_MINS}m ${DURATION_REMAINDER}s"
+                printf 'export DEPLOY_DURATION=%q\n' "$DURATION_STR" >> $BASH_ENV
+
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "📊 SUMMARY: Component Errors=$TOTAL_FAILURES | Test Failures=$TOTAL_TEST_FAILURES"
+                echo "📊 SUMMARY: Component Errors=$TOTAL_FAILURES | Test Failures=$TOTAL_TEST_FAILURES | Time=${DURATION_STR}"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 exit 1
               fi
@@ -666,7 +698,41 @@ jobs:
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -684,6 +750,12 @@ jobs:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
@@ -737,7 +809,41 @@ jobs:
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -755,6 +861,12 @@ jobs:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
@@ -808,7 +920,41 @@ jobs:
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -826,6 +972,12 @@ jobs:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
@@ -876,7 +1028,41 @@ jobs:
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -894,6 +1080,12 @@ jobs:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
@@ -942,7 +1134,41 @@ jobs:
       - slack/notify:
           event: pass
           channel: $SLACK_DEFAULT_CHANNEL
-          template: basic_success_1
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
       - slack/notify:
           event: fail
           channel: $SLACK_DEFAULT_CHANNEL
@@ -960,6 +1186,12 @@ jobs:
                     { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
                     { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
                     { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
                   ]
                 },
                 { "type": "divider" },
