@@ -161,6 +161,13 @@ commands:
                     print(f"  git error: {e}")
                 return "unknown", "unknown", "?"
 
+            def clean_email(email):
+                """Show just 'username' for GitHub noreply, full address otherwise."""
+                if "noreply.github.com" in email:
+                    # '163787984+rvarada-p@users.noreply.github.com' → 'rvarada-p'
+                    return email.split("+")[-1].split("@")[0]
+                return email
+
             lines = []
             seen  = set()
 
@@ -170,10 +177,11 @@ commands:
                 problem = cf.get("problem",        "")[:120].replace('"', "'")
                 path    = resolve(ctype, name)
                 author, email, commit = blame(path)
+                display_email = clean_email(email)
                 key = f"{name}|{author}"
                 if key not in seen:
                     seen.add(key)
-                    lines.append(f":red_circle: *{name}* ({ctype})\n>_{problem}_\n>Last changed by: *{author}* ({email}) — `{commit}`")
+                    lines.append(f":red_circle: *{name}* ({ctype})\n>_{problem}_\n>Last changed by: *{author}* ({display_email}) — `{commit}`")
                     print(f"  → {name}: {author} <{email}> [{commit}]")
 
             for tf in data.get("test_failures", []):
@@ -182,32 +190,36 @@ commands:
                 problem = tf.get("message",    "")[:120].replace('"', "'")
                 path    = resolve("ApexClass", name)
                 author, email, commit = blame(path)
+                display_email = clean_email(email)
                 label = f"{name}.{method}" if method else name
                 key   = f"{label}|{author}"
                 if key not in seen:
                     seen.add(key)
-                    lines.append(f":test_tube: *{label}* (Test)\n>_{problem}_\n>Last changed by: *{author}* ({email}) — `{commit}`")
+                    lines.append(f":test_tube: *{label}* (Test)\n>_{problem}_\n>Last changed by: *{author}* ({display_email}) — `{commit}`")
                     print(f"  → {label}: {author} <{email}> [{commit}]")
 
-            # Write single-line BLAME_TEXT to a temp file
-            # (newlines encoded as \n so it can live in BASH_ENV)
-            text = "\\n\\n".join(lines) if lines else "No component details found."
+            # Write lines to file — one entry per line using a clear separator
+            # Real newlines work fine in the file; we handle BASH_ENV export below
+            text = "\n".join(lines) if lines else "No component details found."
             with open("/tmp/blame_text.txt", "w") as f:
                 f.write(text)
             print(f"\n✅ Wrote {len(lines)} blame entry(s) to /tmp/blame_text.txt")
             PYEOF
 
-              # Read back and export to BASH_ENV
+              # base64-encode so real newlines survive BASH_ENV
               if [ -f /tmp/blame_text.txt ]; then
-                BLAME_TEXT=$(cat /tmp/blame_text.txt)
+                BLAME_ENCODED=$(base64 -w 0 /tmp/blame_text.txt 2>/dev/null \
+                  || base64 /tmp/blame_text.txt)
               else
-                BLAME_TEXT="No failure details captured."
+                BLAME_ENCODED=$(printf 'No failure details captured.' | base64)
               fi
             else
-              BLAME_TEXT="Pipeline failed before deployment reached Salesforce."
+              BLAME_ENCODED=$(printf 'Pipeline failed before deployment reached Salesforce.' | base64)
             fi
 
-            # Safely write to BASH_ENV (escape double-quotes)
+            # Decode back to real newlines, export safely
+            BLAME_TEXT=$(echo "$BLAME_ENCODED" | base64 --decode 2>/dev/null \
+              || echo "$BLAME_ENCODED" | base64 -d)
             printf 'export BLAME_TEXT=%q\n' "$BLAME_TEXT" >> $BASH_ENV
             echo "✅ BLAME_TEXT written to BASH_ENV"
 
@@ -453,19 +465,20 @@ commands:
             ELAPSED=0
 
             while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
-              REPORT_JSON=$(sf project deploy report \
+              # Write directly to file — avoids 2>&1 corrupting JSON with stderr warnings
+              sf project deploy report \
                 --job-id "$DEPLOY_ID" \
                 --target-org target \
-                --json 2>&1)
+                --json > /tmp/report_raw.json 2>/dev/null
 
-              STATUS=$(echo "$REPORT_JSON"               | jq -r '.result.status // "Unknown"')
-              DONE=$(echo "$REPORT_JSON"                 | jq -r '.result.done // false')
-              SUCCESS=$(echo "$REPORT_JSON"              | jq -r '.result.success // false')
-              COMPONENTS_DEPLOYED=$(echo "$REPORT_JSON"  | jq -r '.result.numberComponentsDeployed // 0')
-              COMPONENTS_TOTAL=$(echo "$REPORT_JSON"     | jq -r '.result.numberComponentsTotal // 0')
-              TESTS_COMPLETED=$(echo "$REPORT_JSON"      | jq -r '.result.numberTestsCompleted // 0')
-              TESTS_TOTAL=$(echo "$REPORT_JSON"          | jq -r '.result.numberTestsTotal // 0')
-              RUN_TESTS_ENABLED=$(echo "$REPORT_JSON"    | jq -r '.result.runTestsEnabled // false')
+              STATUS=$(jq -r '.result.status // "Unknown"'              /tmp/report_raw.json)
+              DONE=$(jq -r '.result.done // false'                       /tmp/report_raw.json)
+              SUCCESS=$(jq -r '.result.success // false'                 /tmp/report_raw.json)
+              COMPONENTS_DEPLOYED=$(jq -r '.result.numberComponentsDeployed // 0' /tmp/report_raw.json)
+              COMPONENTS_TOTAL=$(jq -r '.result.numberComponentsTotal // 0'       /tmp/report_raw.json)
+              TESTS_COMPLETED=$(jq -r '.result.numberTestsCompleted // 0'         /tmp/report_raw.json)
+              TESTS_TOTAL=$(jq -r '.result.numberTestsTotal // 0'                 /tmp/report_raw.json)
+              RUN_TESTS_ENABLED=$(jq -r '.result.runTestsEnabled // false'        /tmp/report_raw.json)
 
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo "⏱️  Elapsed: $((ELAPSED / 60)) min | Status: $STATUS"
@@ -486,23 +499,17 @@ commands:
                 echo "❌ Deployment failed!"
                 echo ""
 
-                COMPONENT_FAILURES=$(echo "$REPORT_JSON" | jq -r \
-                  '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' 2>/dev/null)
+                COMPONENT_FAILURES=$(jq -r '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' /tmp/report_raw.json 2>/dev/null)
                 [ -n "$COMPONENT_FAILURES" ] && { echo "🔴 COMPONENT ERRORS:"; echo "$COMPONENT_FAILURES"; echo ""; }
 
-                TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r \
-                  '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName): \(.message)"' 2>/dev/null)
+                TEST_FAILURES=$(jq -r '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName): \(.message)"' /tmp/report_raw.json 2>/dev/null)
                 [ -n "$TEST_FAILURES" ] && { echo "🔴 TEST FAILURES:"; echo "$TEST_FAILURES"; echo ""; }
 
-                COVERAGE_WARNINGS=$(echo "$REPORT_JSON" | jq -r \
-                  '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' 2>/dev/null)
+                COVERAGE_WARNINGS=$(jq -r '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' /tmp/report_raw.json 2>/dev/null)
                 [ -n "$COVERAGE_WARNINGS" ] && { echo "🔴 CODE COVERAGE:"; echo "$COVERAGE_WARNINGS"; echo ""; }
 
                 # ── Write structured failure JSON for git-blame-notify ─
-                # Save REPORT_JSON to a file first — you cannot pipe to
-                # stdin AND use a heredoc for the script simultaneously.
-                echo "$REPORT_JSON" > /tmp/report_raw.json
-
+                # /tmp/report_raw.json already written by the sf CLI call above
                 python3 \<<'PYEOF'
             import json, os
 
@@ -579,8 +586,8 @@ commands:
             }
             BASH
 
-                TOTAL_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberComponentErrors // 0')
-                TOTAL_TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
+                TOTAL_FAILURES=$(jq -r '.result.numberComponentErrors // 0' /tmp/report_raw.json)
+                TOTAL_TEST_FAILURES=$(jq -r '.result.numberTestErrors // 0' /tmp/report_raw.json)
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 echo "📊 SUMMARY: Component Errors=$TOTAL_FAILURES | Test Failures=$TOTAL_TEST_FAILURES"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
