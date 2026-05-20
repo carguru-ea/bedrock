@@ -526,6 +526,11 @@ commands:
                     DEPLOY_SUMMARY="${DEPLOY_SUMMARY}\n:test_tube: *Tests passed:* ${TESTS_PASS}"
                   fi
 
+                  # base64-encode so real newlines survive BASH_ENV transport
+                  SUMMARY_ENCODED=$(printf '%s' "$DEPLOY_SUMMARY" | base64 -w 0 2>/dev/null \
+                    || printf '%s' "$DEPLOY_SUMMARY" | base64)
+                  DEPLOY_SUMMARY=$(echo "$SUMMARY_ENCODED" | base64 --decode 2>/dev/null \
+                    || echo "$SUMMARY_ENCODED" | base64 -d)
                   printf 'export DEPLOY_SUMMARY=%q\n' "$DEPLOY_SUMMARY" >> $BASH_ENV
                   source $BASH_ENV
                   exit 0
@@ -685,6 +690,111 @@ commands:
               echo "✔️ Created tag: $newTag"
             fi
 
+  # ----------------------------------------------------------
+  # SLACK NOTIFY — SUCCESS
+  # Single reusable command called from every job.
+  # DEPLOY_SUMMARY is base64-safe-exported by Poll step.
+  # ----------------------------------------------------------
+  slack-notify-pass:
+    steps:
+      - run:
+          name: "Prepare success Slack payload"
+          when: on_success
+          command: |
+            # Decode DEPLOY_SUMMARY back to real newlines for Slack mrkdwn
+            DEPLOY_SUMMARY_DECODED=$(printf '%s' "$DEPLOY_SUMMARY" | sed 's/\\n/\n/g')
+            printf 'export DEPLOY_SUMMARY_DECODED=%q\n' "$DEPLOY_SUMMARY_DECODED" >> $BASH_ENV
+      - slack/notify:
+          event: pass
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  # ----------------------------------------------------------
+  # SLACK NOTIFY — FAILURE
+  # Single reusable command called from every job.
+  # BLAME_TEXT and DEPLOY_DURATION exported by poll + blame steps.
+  # ----------------------------------------------------------
+  slack-notify-fail:
+    steps:
+      - slack/notify:
+          event: fail
+          channel: $SLACK_DEFAULT_CHANNEL
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
+                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
+                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": ":stopwatch: ${DEPLOY_DURATION}" }
+                  ]
+                },
+                { "type": "divider" },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
+                },
+                { "type": "divider" },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
+                      "url": "${CIRCLE_BUILD_URL}",
+                      "style": "danger"
+                    }
+                  ]
+                }
+              ]
+            }
+
 # ============================================================
 # JOBS
 # ============================================================
@@ -718,88 +828,8 @@ jobs:
           create_tags: << parameters.create_tags >>
       # ── Git blame runs first on failure, then fallback generic notify ──
       - git-blame-notify
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "primary"
-                    }
-                  ]
-                }
-              ]
-            }
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - slack-notify-pass
+      - slack-notify-fail
 
   # ----------------------------------------------------------
   # STAGINGUAT AUTO DEPLOY
@@ -829,88 +859,8 @@ jobs:
           operation: << parameters.operation >>
           create_tags: << parameters.create_tags >>
       - git-blame-notify
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "primary"
-                    }
-                  ]
-                }
-              ]
-            }
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - slack-notify-pass
+      - slack-notify-fail
 
   # ----------------------------------------------------------
   # INTQA FULL SYNC
@@ -940,88 +890,8 @@ jobs:
           batch_job_name: Batch_Initiate_DataDictionary
           operation: << parameters.operation >>
       - git-blame-notify
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "primary"
-                    }
-                  ]
-                }
-              ]
-            }
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - slack-notify-pass
+      - slack-notify-fail
 
   # ----------------------------------------------------------
   # STAGINGUAT FULL SYNC
@@ -1048,88 +918,8 @@ jobs:
           operation: << parameters.operation >>
           test_level: << parameters.test_level >>
       - git-blame-notify
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "primary"
-                    }
-                  ]
-                }
-              ]
-            }
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - slack-notify-pass
+      - slack-notify-fail
 
   # ----------------------------------------------------------
   # PRODUCTION FULL SYNC
@@ -1154,88 +944,8 @@ jobs:
           batch_job_name: Batch_Initiate_DataDictionary
           operation: << parameters.operation >>
       - git-blame-notify
-      - slack/notify:
-          event: pass
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":white_check_mark: Salesforce Deploy Succeeded", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:rocket: Deploy Summary*\n${DEPLOY_SUMMARY}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "primary"
-                    }
-                  ]
-                }
-              ]
-            }
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    { "type": "mrkdwn", "text": ":stopwatch: *Time taken:* ${DEPLOY_DURATION}" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - slack-notify-pass
+      - slack-notify-fail
 
 # ============================================================
 # WORKFLOWS  (unchanged from original)
