@@ -12,7 +12,7 @@ public class AccountUtilityTest {
     
     @IsTest
     static void testGetAccountById() {
-        Account acc = [SELECT Id FROM Account LIMIT 1];
+        Account acc = [SELECT Id FROM Account where name = 'TEsssst' LIMIT 1];
         Account result = AccountUtility.getAccountById(acc.Id);
         Assert.isNotNull(result);
         Assert.areEqual('Test Account', result.Name);
