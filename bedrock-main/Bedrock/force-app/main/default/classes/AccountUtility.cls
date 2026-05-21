@@ -8,7 +8,7 @@ public class AccountUtility {
      * @param accountId The account ID
      * @return Account record
      */
-    public static Account getAccountById(Idc accountId) {
+    public static Account getAccountById(Id accountId) {
         return [SELECT Id, Name, Industry, BillingCity FROM Account WHERE Id = :accountId LIMIT 1];
     }
     
