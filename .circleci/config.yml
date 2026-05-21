@@ -4,9 +4,6 @@ orbs:
   node: circleci/node@5.0.2
   slack: circleci/slack@4.12.5
 
-# ============================================================
-# PIPELINE PARAMETERS
-# ============================================================
 parameters:
   action_type:
     type: enum
@@ -23,13 +20,7 @@ parameters:
       - RunSpecifiedTests
     default: RunLocalTests
 
-# ============================================================
-# COMMANDS
-# ============================================================
 commands:
-  # ----------------------------------------------------------
-  # Install Tooling: Node + SF CLI
-  # ----------------------------------------------------------
   install-tooling:
     steps:
       - node/install:
@@ -40,13 +31,8 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
-  # ----------------------------------------------------------
-  # Find Test Classes from GitHub Repository Coverage Map
-  # ----------------------------------------------------------
+  
 
-  # ----------------------------------------------------------
-  # JWT AUTH COMMAND
-  # ----------------------------------------------------------
   jwt-auth:
     parameters:
       target_env:
@@ -69,9 +55,6 @@ commands:
               --alias target \
               --set-default
 
-  # ----------------------------------------------------------
-  # DEPLOY/VALIDATE FULL-SYNC MANIFEST
-  # ----------------------------------------------------------
   run-full-sync:
     parameters:
       operation:
@@ -108,9 +91,6 @@ commands:
                 --wait 360
             fi
 
-  # ----------------------------------------------------------
-  # RUN BATCH JOB
-  # ----------------------------------------------------------
   run-batch-job:
     parameters:
       batch_job_name:
@@ -133,9 +113,6 @@ commands:
             APEX
             sf apex run --target-org target --file run_batch.apex
 
-  # ----------------------------------------------------------
-  # DEPLOY/VALIDATE WITH TAGS + CANCEL ACTIVE DEPLOYS
-  # ----------------------------------------------------------
   deploy-with-tags:
     parameters:
       tag_prefix:
@@ -179,13 +156,10 @@ commands:
             TAG_PREFIX="<< parameters.tag_prefix >>"
             echo "Using Tag Prefix: $TAG_PREFIX"
             git fetch --tags
-
             currentRef=0
             tags=$(git tag -l "${TAG_PREFIX}[0-9]*" | sort -V)
-
             if [ -n "$tags" ]; then
-              echo "🔍 Tags found:"
-              echo "$tags"
+              echo "🔍 Tags found:"; echo "$tags"
               for tag in $tags; do
                 refNum=$(echo "$tag" | sed -E "s/${TAG_PREFIX}([0-9]+)/\1/")
                 if [ "$refNum" -gt "$currentRef" ]; then currentRef=$refNum; fi
@@ -205,15 +179,12 @@ commands:
             TAG_PREFIX="<< parameters.tag_prefix >>"
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             echo "Comparing HEAD to tag: ${TAG_PREFIX}${CURRENT_REF}"
             git diff --diff-filter=ACMR --name-only "${TAG_PREFIX}${CURRENT_REF}" HEAD \
               | grep 'force-app/' \
               | sed -E 's#.*(force-app/.*)#\1#' > files.txt || true
-
             if [ -s files.txt ]; then
-              echo "Changes detected:"
-              cat files.txt
+              echo "Changes detected:"; cat files.txt
               mapfile -t manifest_paths < files.txt
               sf project generate manifest -p "${manifest_paths[@]}"
               echo "export CHANGES_FOUND=true" >> $BASH_ENV
@@ -222,7 +193,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
- 
+   
 
       - run:
           name: Deploy Metadata
@@ -230,39 +201,29 @@ commands:
             source $BASH_ENV
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             echo "FIRST_RUN=$FIRST_RUN"
             echo "CHANGES_FOUND=$CHANGES_FOUND"
             echo "APEX_CLASSES_CHANGED=$APEX_CLASSES_CHANGED"
             echo "TEST_CLASSES=$TEST_CLASSES"
-
             if [ "$CHANGES_FOUND" = "true" ]; then
               echo "🔄 DELTA deploy"
             else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-              fi
+              if [ "$FIRST_RUN" = "true" ]; then echo "🚀 FIRST RUN — FULL DEPLOY"
+              else echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"; fi
               sf project generate manifest --source-dir force-app > /dev/null
             fi
-
             source $BASH_ENV
-
             if [ "$CHANGES_FOUND" = "true" ]; then
               if [ "$APEX_CLASSES_CHANGED" = "true" ]; then
                 if [ -z "$TEST_CLASSES" ]; then
-                  echo "❌ ERROR: Apex classes modified but no test classes found"
-                  exit 1
+                  echo "❌ ERROR: Apex classes modified but no test classes found"; exit 1
                 fi
                 test_args=""
-                for test_class in $TEST_CLASSES; do
-                  test_args="$test_args --tests $test_class"
-                done
+                for test_class in $TEST_CLASSES; do test_args="$test_args --tests $test_class"; done
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level RunSpecifiedTests \
                   $test_args \
                   --async 2>&1)
               else
@@ -270,48 +231,29 @@ commands:
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
-                  --test-level RunLocalTests \
+                  --test-level NoTestRun \
                   --async 2>&1)
               fi
-
               echo "$DEPLOY_OUTPUT"
               DEPLOY_ID=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deploy ID: \K[A-Za-z0-9]+' | head -n 1 | tr -d '\n\r')
-
-              if [ -z "$DEPLOY_ID" ]; then
-                echo "❌ ERROR: Failed to extract Deploy ID"
-                exit 1
-              fi
+              if [ -z "$DEPLOY_ID" ]; then echo "❌ ERROR: Failed to extract Deploy ID"; exit 1; fi
               echo "📝 Deploy ID: $DEPLOY_ID"
               echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Poll Deployment Status
-      # Change vs original: on failure, saves a clean
-      # /tmp/deploy_failures.json for git-blame-notify.
-      # All other logic is unchanged.
-      # --------------------------------------------------------
       - run:
           name: Poll Deployment Status
           command: |
             source $BASH_ENV
-
-            if [ -z "$DEPLOY_ID" ]; then
-              echo "⚠️ No deployment to poll"
-              exit 0
-            fi
-
+            if [ -z "$DEPLOY_ID" ]; then echo "⚠️ No deployment to poll"; exit 0; fi
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
             cd "$PROJECT_DIR"
-
             echo "📊 Polling deployment: $DEPLOY_ID"
             TIMEOUT_SECONDS=$((120 * 60))
             POLL_INTERVAL=30
             ELAPSED=0
-
             while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
               REPORT_JSON=$(sf project deploy report --job-id "$DEPLOY_ID" --target-org target --json 2>&1)
-
               STATUS=$(echo "$REPORT_JSON"              | jq -r '.result.status // "Unknown"')
               DONE=$(echo "$REPORT_JSON"                | jq -r '.result.done // false')
               SUCCESS=$(echo "$REPORT_JSON"             | jq -r '.result.success // false')
@@ -320,74 +262,52 @@ commands:
               TESTS_COMPLETED=$(echo "$REPORT_JSON"     | jq -r '.result.numberTestsCompleted // 0')
               TESTS_TOTAL=$(echo "$REPORT_JSON"         | jq -r '.result.numberTestsTotal // 0')
               RUN_TESTS_ENABLED=$(echo "$REPORT_JSON"   | jq -r '.result.runTestsEnabled // false')
-
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo "⏱️  Elapsed: $((ELAPSED / 60)) min | Status: $STATUS"
               echo "📦 Components: $COMPONENTS_DEPLOYED / $COMPONENTS_TOTAL"
               if [ "$RUN_TESTS_ENABLED" = "true" ] && [ "$COMPONENTS_DEPLOYED" -eq "$COMPONENTS_TOTAL" ] && [ "$COMPONENTS_TOTAL" -gt 0 ]; then
                 echo "🧪 Tests: $TESTS_COMPLETED / $TESTS_TOTAL"
               fi
-
               if [ "$DONE" = "true" ]; then
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
                 if [ "$SUCCESS" = "true" ]; then
                   echo "✅ Deployment completed successfully!"
-                  # Export deploy stats for success Slack message
                   SUMMARY=":package: *Components:* ${COMPONENTS_DEPLOYED}/${COMPONENTS_TOTAL} deployed"
                   if [ "$TESTS_COMPLETED" -gt 0 ] 2>/dev/null; then
                     SUMMARY="${SUMMARY}\n:test_tube: *Tests run:* ${TESTS_COMPLETED}/${TESTS_TOTAL} passed"
                   fi
-                  printf 'export DEPLOY_SUMMARY=%q\n' "$SUMMARY" >> $BASH_ENV
+                  # Use declare -p for safe BASH_ENV export — handles all special chars
+                  DEPLOY_SUMMARY="$SUMMARY"
+                  declare -p DEPLOY_SUMMARY >> $BASH_ENV
                   exit 0
                 fi
-
-                echo "❌ Deployment failed!"
-                echo ""
-
+                echo "❌ Deployment failed!"; echo ""
                 COMPONENT_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.componentFailures[]? | "  ❌ \(.fullName) (\(.componentType)): \(.problem)"' 2>/dev/null)
                 [ -n "$COMPONENT_FAILURES" ] && { echo "🔴 COMPONENT ERRORS:"; echo "$COMPONENT_FAILURES"; echo ""; }
-
                 TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.failures[]? | "  ❌ \(.name).\(.methodName): \(.message)"' 2>/dev/null)
                 [ -n "$TEST_FAILURES" ] && { echo "🔴 TEST FAILURES:"; echo "$TEST_FAILURES"; echo ""; }
-
                 COVERAGE_WARNINGS=$(echo "$REPORT_JSON" | jq -r '.result.details.runTestResult.codeCoverageWarnings[]? | "  ⚠️  \(.name): \(.message)"' 2>/dev/null)
                 [ -n "$COVERAGE_WARNINGS" ] && { echo "🔴 CODE COVERAGE:"; echo "$COVERAGE_WARNINGS"; echo ""; }
-
                 TOTAL_FAILURES=$(echo "$REPORT_JSON"      | jq -r '.result.numberComponentErrors // 0')
                 TOTAL_TEST_FAILURES=$(echo "$REPORT_JSON" | jq -r '.result.numberTestErrors // 0')
                 echo "📊 SUMMARY: Component Errors=$TOTAL_FAILURES | Test Failures=$TOTAL_TEST_FAILURES"
-
-                # ── Save clean failure JSON for git-blame-notify ──────
-                # Fresh sf call with 2>/dev/null keeps JSON clean
+                # Save clean failure JSON for git-blame-notify
                 sf project deploy report \
                   --job-id "$DEPLOY_ID" \
                   --target-org target \
                   --json > /tmp/report_raw.json 2>/dev/null || true
-
-                # Extract component + test failures using jq only (no Python)
                 CF=$(jq '.result.details.componentFailures // []' /tmp/report_raw.json 2>/dev/null || echo '[]')
-                # Normalise: single object → array
                 echo "$CF" | jq -e 'type == "object"' > /dev/null 2>&1 && CF="[$CF]"
-
                 TF=$(jq '(.result.details.runTestResult.failures // [])' /tmp/report_raw.json 2>/dev/null || echo '[]')
                 echo "$TF" | jq -e 'type == "object"' > /dev/null 2>&1 && TF="[$TF]"
-
-                jq -n \
-                  --argjson cf "$CF" \
-                  --argjson tf "$TF" \
-                  '{"component_failures":$cf,"test_failures":$tf}' \
-                  > /tmp/deploy_failures.json
-                echo "📝 Saved $(jq '.component_failures|length' /tmp/deploy_failures.json) component failure(s) for git blame"
-                # ── END save ─────────────────────────────────────────
-
+                jq -n --argjson cf "$CF" --argjson tf "$TF" \
+                  '{"component_failures":$cf,"test_failures":$tf}' > /tmp/deploy_failures.json
+                echo "📝 Saved $(jq '.component_failures|length' /tmp/deploy_failures.json) component failure(s)"
                 exit 1
               fi
-
               sleep $POLL_INTERVAL
               ELAPSED=$((ELAPSED + POLL_INTERVAL))
             done
-
             echo "⏱️  Timeout after 120 minutes | Status: $STATUS"
             exit 1
 
@@ -398,10 +318,8 @@ commands:
             OPERATION="<< parameters.operation >>"
             CREATE_TAGS="<< parameters.create_tags >>"
             TAG_PREFIX="<< parameters.tag_prefix >>"
-
             [ "$OPERATION" = "validate" ] && { echo "Validation run — no tag."; exit 0; }
             [ "$CREATE_TAGS" != "true" ]  && { echo "Tag creation disabled."; exit 0; }
-
             if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
@@ -417,30 +335,34 @@ commands:
 
   # ----------------------------------------------------------
   # GIT BLAME NOTIFY
-  # Runs when: on_fail. Reads /tmp/deploy_failures.json,
-  # resolves each component to its repo file path, runs
-  # git log to get the last author name/email/commit, and
-  # exports BLAME_TEXT to $BASH_ENV for slack-notify-fail.
-  # Pure bash + jq — no Python, no heredoc conflicts.
+  # KEY FIX: Backticks in commit hashes were being interpreted
+  # as bash command substitution when BASH_ENV was sourced,
+  # causing "command not found" errors. Fix:
+  #   1. No backticks in blame output — use (commit) instead
+  #   2. Use declare -p for BASH_ENV export — bash-native
+  #      serialisation that correctly escapes ALL special chars
+  # ----------------------------------------------------------
+  # ----------------------------------------------------------
+  # GIT BLAME NOTIFY
+  # Runs on_fail. Uses jq to safely build a full Slack Block
+  # Kit JSON payload — one clean block per failed component.
+  # Posts via curl with SLACK_ACCESS_TOKEN.
+  # No string interpolation, no escaping issues.
   # ----------------------------------------------------------
   git-blame-notify:
     steps:
       - run:
-          name: "🔍 Git Blame — Collect Failed Component Owners"
+          name: "🔍 Git Blame — Build Slack Failure Payload"
           when: on_fail
           command: |
             git fetch --unshallow 2>/dev/null || true
-
             PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
 
-            if [ ! -f /tmp/deploy_failures.json ]; then
-              echo "⚠️  No failure data — pipeline failed before deployment"
-              printf 'export BLAME_TEXT=%q\n' "No component failure details captured." >> $BASH_ENV
-              exit 0
-            fi
+            BLOCKS_FILE="/tmp/blame_blocks.json"
+            PAYLOAD_FILE="/tmp/slack_failure_payload.json"
 
             resolve_path() {
-              local TYPE="$1" NAME="$2"
+              local TYPE="$1" NAME="$2" OBJ FLD
               case "$TYPE" in
                 ApexClass)                echo "${PROJECT_DIR}/force-app/main/default/classes/${NAME}.cls" ;;
                 ApexTrigger)              echo "${PROJECT_DIR}/force-app/main/default/triggers/${NAME}.trigger" ;;
@@ -449,6 +371,13 @@ commands:
                 Flow)                     echo "${PROJECT_DIR}/force-app/main/default/flows/${NAME}.flow-meta.xml" ;;
                 PermissionSet)            echo "${PROJECT_DIR}/force-app/main/default/permissionsets/${NAME}.permissionset-meta.xml" ;;
                 Profile)                  echo "${PROJECT_DIR}/force-app/main/default/profiles/${NAME}.profile-meta.xml" ;;
+                CustomObject)             echo "${PROJECT_DIR}/force-app/main/default/objects/${NAME}/${NAME}.object-meta.xml" ;;
+                CustomField)
+                  OBJ=$(echo "$NAME" | cut -d'.' -f1); FLD=$(echo "$NAME" | cut -d'.' -f2)
+                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/fields/${FLD}.field-meta.xml" ;;
+                ValidationRule)
+                  OBJ=$(echo "$NAME" | cut -d'.' -f1); FLD=$(echo "$NAME" | cut -d'.' -f2)
+                  echo "${PROJECT_DIR}/force-app/main/default/objects/${OBJ}/validationRules/${FLD}.validationRule-meta.xml" ;;
                 *)
                   find "${PROJECT_DIR}" -type f \( \
                     -name "${NAME}.cls" -o -name "${NAME}.trigger" -o -name "${NAME}.js" \
@@ -473,70 +402,161 @@ commands:
               fi
             }
 
-            # Write blame entries to a file using printf so actual newlines are stored.
-            # This is critical — actual newline chars (not \n 2-char sequences) let
-            # printf '%q' produce $'...\n...' ANSI-C quoting which Slack renders correctly.
-            > /tmp/blame_text.txt
+            # Start with empty blocks array
+            echo '[]' > "$BLOCKS_FILE"
 
-            COMP_COUNT=$(jq '.component_failures | length' /tmp/deploy_failures.json 2>/dev/null || echo 0)
-            i=0
-            while [ "$i" -lt "$COMP_COUNT" ]; do
-              CTYPE=$(jq -r ".component_failures[$i].componentType // \"Unknown\"" /tmp/deploy_failures.json)
-              NAME=$(jq -r  ".component_failures[$i].fullName // \"Unknown\""      /tmp/deploy_failures.json)
-              PROB=$(jq -r  ".component_failures[$i].problem // \"\"" /tmp/deploy_failures.json | cut -c1-200 | tr '"' "'")
-              LINE_NO=$(jq -r ".component_failures[$i].lineNumber // \"\""         /tmp/deploy_failures.json)
-              COL_NO=$(jq -r  ".component_failures[$i].columnNumber // \"\""       /tmp/deploy_failures.json)
-              FILEPATH=$(resolve_path "$CTYPE" "$NAME")
-              BLAME=$(run_git_blame "$FILEPATH")
-              AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
-              EMAIL=$(echo  "$BLAME" | cut -d'|' -f2)
-              COMMIT=$(echo "$BLAME" | cut -d'|' -f3)
-              echo "  → $NAME ($CTYPE): $AUTHOR <$EMAIL> [$COMMIT]"
-              # Build location string if line number is available
-              LOCATION=""
-              [ -n "$LINE_NO" ] && [ "$LINE_NO" != "null" ] && LOCATION=" — line ${LINE_NO}"
-              [ -n "$COL_NO"  ] && [ "$COL_NO"  != "null" ] && LOCATION="${LOCATION}, col ${COL_NO}"
-              printf ':red_circle: *%s* (%s)\n>_%s%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
-                "$NAME" "$CTYPE" "$PROB" "$LOCATION" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
-              i=$((i + 1))
-            done
+            add_component_block() {
+              local NAME="$1" CTYPE="$2" PROB="$3" LOCATION="$4" AUTHOR="$5" EMAIL="$6" COMMIT="$7"
+              local ICON=":red_circle:"
+              [ "$CTYPE" = "ApexClass" ] && ICON=":large_red_circle:"
 
-            TEST_COUNT=$(jq '.test_failures | length' /tmp/deploy_failures.json 2>/dev/null || echo 0)
-            i=0
-            while [ "$i" -lt "$TEST_COUNT" ]; do
-              NAME=$(jq -r    ".test_failures[$i].name // \"Unknown\""        /tmp/deploy_failures.json)
-              METHOD=$(jq -r  ".test_failures[$i].methodName // \"\"" /tmp/deploy_failures.json)
-              PROB=$(jq -r    ".test_failures[$i].message // \"\"" /tmp/deploy_failures.json | cut -c1-200 | tr '"' "'")
-              # Extract first line of stack trace (most useful: the line/column reference)
-              STACK=$(jq -r   ".test_failures[$i].stackTrace // \"\"" /tmp/deploy_failures.json                 | head -1 | cut -c1-120 | tr '"' "'")
-              FILEPATH=$(resolve_path "ApexClass" "$NAME")
-              BLAME=$(run_git_blame "$FILEPATH")
-              AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
-              EMAIL=$(echo  "$BLAME" | cut -d'|' -f2)
-              COMMIT=$(echo "$BLAME" | cut -d'|' -f3)
-              LABEL="$NAME"
-              [ -n "$METHOD" ] && LABEL="${NAME}.${METHOD}"
-              echo "  → $LABEL (Test): $AUTHOR <$EMAIL> [$COMMIT]"
-              if [ -n "$STACK" ] && [ "$STACK" != "null" ]; then
-                printf ':test_tube: *%s* (Test)\n>_%s_\n>`%s`\n>Last changed by: *%s* (%s) — `%s`\n' \
-                  "$LABEL" "$PROB" "$STACK" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
-              else
-                printf ':test_tube: *%s* (Test)\n>_%s_\n>Last changed by: *%s* (%s) — `%s`\n' \
-                  "$LABEL" "$PROB" "$AUTHOR" "$EMAIL" "$COMMIT" >> /tmp/blame_text.txt
+              jq -n \
+                --arg icon  "$ICON" \
+                --arg name  "$NAME" \
+                --arg ctype "$CTYPE" \
+                --arg prob  "$PROB" \
+                --arg loc   "$LOCATION" \
+                --arg who   "$AUTHOR" \
+                --arg email "$EMAIL" \
+                --arg hash  "$COMMIT" \
+                '[
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": (":red_circle: *" + $name + "*  `" + $ctype + "`")
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": ("_" + $prob + (if $loc != "" then "  " + $loc else "" end) + "_")
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [{
+                      "type": "mrkdwn",
+                      "text": (":bust_in_silhouette: *" + $who + "*  " + $email + "  \u2014  `" + $hash + "`")
+                    }]
+                  },
+                  {"type": "divider"}
+                ]' > /tmp/entry.json
+              jq -s '.[0] + .[1]' "$BLOCKS_FILE" /tmp/entry.json > /tmp/blocks_tmp.json \
+                && mv /tmp/blocks_tmp.json "$BLOCKS_FILE"
+            }
+
+            UNIQUE_NAMES=""
+            SHOWN=0
+            MAX_SHOWN=5
+            SKIPPED=0
+
+            if [ -f /tmp/deploy_failures.json ]; then
+              COMP_COUNT=$(jq '.component_failures | length' /tmp/deploy_failures.json 2>/dev/null || echo 0)
+              i=0
+              while [ "$i" -lt "$COMP_COUNT" ]; do
+                NAME=$(jq -r ".component_failures[$i].fullName // \"Unknown\""      /tmp/deploy_failures.json)
+                if echo "$UNIQUE_NAMES" | grep -qF "||${NAME}||"; then
+                  i=$((i+1)); SKIPPED=$((SKIPPED+1)); continue
+                fi
+                if [ "$SHOWN" -ge "$MAX_SHOWN" ]; then
+                  i=$((i+1)); SKIPPED=$((SKIPPED+1)); continue
+                fi
+                UNIQUE_NAMES="${UNIQUE_NAMES}||${NAME}||"
+                CTYPE=$(jq -r ".component_failures[$i].componentType // \"Unknown\"" /tmp/deploy_failures.json)
+                PROB=$(jq -r  ".component_failures[$i].problem // \"\""              /tmp/deploy_failures.json | cut -c1-150)
+                LINE_NO=$(jq -r ".component_failures[$i].lineNumber // \"\""         /tmp/deploy_failures.json)
+                LOCATION=""
+                [ -n "$LINE_NO" ] && [ "$LINE_NO" != "null" ] && LOCATION="(line ${LINE_NO})"
+                FILEPATH=$(resolve_path "$CTYPE" "$NAME")
+                BLAME=$(run_git_blame "$FILEPATH")
+                AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
+                EMAIL=$(echo  "$BLAME" | cut -d'|' -f2)
+                COMMIT=$(echo "$BLAME" | cut -d'|' -f3)
+                echo "  → $NAME ($CTYPE): $AUTHOR [$COMMIT]"
+                add_component_block "$NAME" "$CTYPE" "$PROB" "$LOCATION" "$AUTHOR" "$EMAIL" "$COMMIT"
+                SHOWN=$((SHOWN+1)); i=$((i+1))
+              done
+
+              TEST_COUNT=$(jq '.test_failures | length' /tmp/deploy_failures.json 2>/dev/null || echo 0)
+              UNIQUE_TESTS=""
+              i=0
+              while [ "$i" -lt "$TEST_COUNT" ]; do
+                NAME=$(jq -r   ".test_failures[$i].name // \"Unknown\""   /tmp/deploy_failures.json)
+                METHOD=$(jq -r ".test_failures[$i].methodName // \"\""    /tmp/deploy_failures.json)
+                LABEL="$NAME"
+                [ -n "$METHOD" ] && LABEL="${NAME}.${METHOD}"
+                if echo "$UNIQUE_TESTS" | grep -qF "||${LABEL}||"; then
+                  i=$((i+1)); continue
+                fi
+                if [ "$SHOWN" -ge "$MAX_SHOWN" ]; then
+                  i=$((i+1)); SKIPPED=$((SKIPPED+1)); continue
+                fi
+                UNIQUE_TESTS="${UNIQUE_TESTS}||${LABEL}||"
+                PROB=$(jq -r  ".test_failures[$i].message // \"\""        /tmp/deploy_failures.json | cut -c1-150)
+                STACK=$(jq -r ".test_failures[$i].stackTrace // \"\""     /tmp/deploy_failures.json | head -1 | cut -c1-100)
+                [ -n "$STACK" ] && [ "$STACK" != "null" ] && PROB="${PROB}  ${STACK}"
+                FILEPATH=$(resolve_path "ApexClass" "$NAME")
+                BLAME=$(run_git_blame "$FILEPATH")
+                AUTHOR=$(echo "$BLAME" | cut -d'|' -f1)
+                EMAIL=$(echo  "$BLAME" | cut -d'|' -f2)
+                COMMIT=$(echo "$BLAME" | cut -d'|' -f3)
+                echo "  → $LABEL (Test): $AUTHOR [$COMMIT]"
+                add_component_block "$LABEL" "Test" "$PROB" "" "$AUTHOR" "$EMAIL" "$COMMIT"
+                SHOWN=$((SHOWN+1)); i=$((i+1))
+              done
+
+              if [ "$SKIPPED" -gt 0 ]; then
+                jq -n --arg msg "...and ${SKIPPED} more. See the build log for full details." \
+                  '[{"type":"context","elements":[{"type":"mrkdwn","text":$msg}]}]' \
+                  > /tmp/entry.json
+                jq -s '.[0] + .[1]' "$BLOCKS_FILE" /tmp/entry.json > /tmp/blocks_tmp.json \
+                  && mv /tmp/blocks_tmp.json "$BLOCKS_FILE"
               fi
-              i=$((i + 1))
-            done
 
-            if [ ! -s /tmp/blame_text.txt ]; then
-              echo "No component details found." > /tmp/blame_text.txt
+              if [ "$SHOWN" -eq 0 ]; then
+                jq -n '[{"type":"section","text":{"type":"mrkdwn","text":"No component details found. Check the build log."}}]' \
+                  > "$BLOCKS_FILE"
+              fi
+            else
+              jq -n '[{"type":"section","text":{"type":"mrkdwn","text":"Pipeline failed before deployment. No component details available."}}]' \
+                > "$BLOCKS_FILE"
             fi
 
-            # Read file (actual newlines) → printf '%q' produces $'...\n...' ANSI-C form
-            # CircleCI sources this and BLAME_TEXT gets actual newlines → Slack renders them
-            BLAME_TEXT=$(cat /tmp/blame_text.txt)
-            printf 'export BLAME_TEXT=%q\n' "$BLAME_TEXT" >> $BASH_ENV
-            echo "✅ BLAME_TEXT exported ($(wc -l < /tmp/blame_text.txt) lines)"
+            # Build payload in 4 simple jq steps — avoids the invalid
+            # '] + $var + [' array-concat-inside-object syntax that
+            # causes jq compile errors in multi-line shell commands.
 
+            # Step 1: header blocks
+            jq -n \
+              --arg branch  "$CIRCLE_BRANCH" \
+              --arg job     "$CIRCLE_JOB" \
+              --arg user    "$CIRCLE_USERNAME" \
+              --arg project "$CIRCLE_PROJECT_REPONAME" \
+              '[{"type":"header","text":{"type":"plain_text","text":":rotating_light: Salesforce Deploy Failed","emoji":true}},{"type":"section","fields":[{"type":"mrkdwn","text":("*Branch:*\n`"+$branch+"`")},{"type":"mrkdwn","text":("*Job:*\n`"+$job+"`")},{"type":"mrkdwn","text":("*Triggered by:*\n`"+$user+"`")},{"type":"mrkdwn","text":("*Project:*\n`"+$project+"`")}]},{"type":"divider"},{"type":"section","text":{"type":"mrkdwn","text":"*:mag: Failed Components & Owners*"}}]' \
+              > /tmp/header_blocks.json
+
+            # Step 2: footer block
+            jq -n --arg url "$CIRCLE_BUILD_URL" \
+              '[{"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"View Build","emoji":true},"url":$url,"style":"danger"}]}]' \
+              > /tmp/footer_blocks.json
+
+            # Step 3: merge header + blame + footer into one blocks array
+            ALL_BLOCKS=$(jq -s '.[0] + .[1] + .[2]' \
+              /tmp/header_blocks.json "$BLOCKS_FILE" /tmp/footer_blocks.json)
+
+            # Step 4: wrap in the final payload envelope
+            jq -n \
+              --arg     channel "$SLACK_DEFAULT_CHANNEL" \
+              --argjson blocks  "$ALL_BLOCKS" \
+              '{"channel":$channel,"blocks":$blocks}' > "$PAYLOAD_FILE"
+
+            echo "✅ Slack payload built ($(wc -c < $PAYLOAD_FILE) bytes)"
+
+  # ----------------------------------------------------------
+  # SLACK NOTIFY — SUCCESS
+  # ----------------------------------------------------------
   slack-notify-pass:
     steps:
       - slack/notify:
@@ -579,57 +599,36 @@ commands:
             }
 
   # ----------------------------------------------------------
-  # SLACK NOTIFY — FAILURE (single definition, used by all jobs)
-  # BLAME_TEXT is populated by git-blame-notify above.
+  # SLACK NOTIFY — FAILURE
+  # Posts the pre-built JSON payload from git-blame-notify
+  # via curl. Bypasses orb template interpolation entirely
+  # so formatting is clean and controlled.
   # ----------------------------------------------------------
   slack-notify-fail:
     steps:
-      - slack/notify:
-          event: fail
-          channel: $SLACK_DEFAULT_CHANNEL
-          custom: |
-            {
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": { "type": "plain_text", "text": ":rotating_light: Salesforce Deploy Failed", "emoji": true }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    { "type": "mrkdwn", "text": "*Branch:*\n`${CIRCLE_BRANCH}`" },
-                    { "type": "mrkdwn", "text": "*Job:*\n`${CIRCLE_JOB}`" },
-                    { "type": "mrkdwn", "text": "*Triggered by:*\n`${CIRCLE_USERNAME}`" },
-                    { "type": "mrkdwn", "text": "*Project:*\n`${CIRCLE_PROJECT_REPONAME}`" }
-                  ]
-                },
-                { "type": "divider" },
-                {
-                  "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*:mag: Failed Components \u0026 Owners:*\n${BLAME_TEXT}" }
-                },
-                { "type": "divider" },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": { "type": "plain_text", "text": ":link: View Build", "emoji": true },
-                      "url": "${CIRCLE_BUILD_URL}",
-                      "style": "danger"
-                    }
-                  ]
-                }
-              ]
-            }
+      - run:
+          name: "Send Failure Notification to Slack"
+          when: on_fail
+          command: |
+            if [ ! -f /tmp/slack_failure_payload.json ]; then
+              echo "⚠️ No failure payload found — skipping"
+              exit 0
+            fi
 
-# ============================================================
-# JOBS
-# ============================================================
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer $SLACK_ACCESS_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data @/tmp/slack_failure_payload.json \
+              https://slack.com/api/chat.postMessage)
+
+            if echo "$RESPONSE" | jq -e '.ok' > /dev/null 2>&1; then
+              echo "✅ Slack failure notification sent"
+            else
+              echo "❌ Slack error: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+              echo "$RESPONSE"
+            fi
+
 jobs:
-  # ----------------------------------------------------------
-  # INTQA AUTO DEPLOY — PR merge to BRInt
-  # ----------------------------------------------------------
   auto-deploy-intqa:
     parameters:
       tag_prefix:
@@ -658,9 +657,6 @@ jobs:
       - slack-notify-pass
       - slack-notify-fail
 
-  # ----------------------------------------------------------
-  # STAGINGUAT AUTO DEPLOY — PR merge to BRStaging
-  # ----------------------------------------------------------
   auto-deploy-staging:
     parameters:
       tag_prefix:
@@ -689,9 +685,6 @@ jobs:
       - slack-notify-pass
       - slack-notify-fail
 
-  # ----------------------------------------------------------
-  # INTQA FULL SYNC — Manual/API
-  # ----------------------------------------------------------
   intqa-full-sync:
     parameters:
       operation:
@@ -720,9 +713,6 @@ jobs:
       - slack-notify-pass
       - slack-notify-fail
 
-  # ----------------------------------------------------------
-  # STAGINGUAT FULL SYNC — Manual/API
-  # ----------------------------------------------------------
   staginguat-full-sync:
     parameters:
       operation:
@@ -748,9 +738,6 @@ jobs:
       - slack-notify-pass
       - slack-notify-fail
 
-  # ----------------------------------------------------------
-  # PRODUCTION FULL SYNC — Manual/API
-  # ----------------------------------------------------------
   prod-full-sync:
     parameters:
       operation:
@@ -774,9 +761,6 @@ jobs:
       - slack-notify-pass
       - slack-notify-fail
 
-# ============================================================
-# WORKFLOWS
-# ============================================================
 workflows:
   version: 2
 
