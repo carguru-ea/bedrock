@@ -355,11 +355,7 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
-      # --------------------------------------------------------
-      # Find Test Classes from Gist
-      # --------------------------------------------------------
-      - find-test-classes:
-          target_env: << parameters.target_env >>
+ 
 
       # --------------------------------------------------------
       # Build Destructive Changes Manifest (sets DESTRUCTIVE_ARGS)
