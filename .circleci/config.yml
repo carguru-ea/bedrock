@@ -40,6 +40,121 @@ commands:
             npm install -g @salesforce/cli
             sf --version
 
+   
+  # ----------------------------------------------------------
+  # Build Destructive Changes Manifest
+  # - Detects files deleted since the last delta tag
+  # - Filters out metadata types that must NOT be deleted from
+  #   the org (list views, custom metadata, etc.) using an
+  #   ignore map pulled from the EA-Salesforce-Mapping repo
+  # - Restores the remaining deleted sources from the old ref
+  #   and lets the CLI resolve them into destructiveChangesPost.xml
+  # - Exports DESTRUCTIVE_ARGS for the deploy step to consume
+  #
+  # Required context env vars (same source as the coverage map):
+  #   MAPPINGS_REPO_URL, GITHUB_TEST_TOKEN, DESTRUCTIVE_MAP_FILENAME
+  # ----------------------------------------------------------
+  build-destructive-manifest:
+    steps:
+      - run:
+          name: Build Destructive Changes Manifest
+          command: |
+            source $BASH_ENV
+            PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
+            cd "$PROJECT_DIR"
+
+            # No prior tag => first run => nothing existed to delete
+            if [ "$FIRST_RUN" = "true" ]; then
+              echo "ℹ️ First run — skipping destructive change detection."
+              exit 0
+            fi
+
+            # Ensure old blobs are available (checkout may be shallow)
+            git fetch --tags --unshallow 2>/dev/null || git fetch --tags 2>/dev/null || true
+
+            COMPARE_REF="${TAG_PREFIX}${CURRENT_REF}"
+            echo "🔍 Detecting deletions between $COMPARE_REF and HEAD..."
+
+            # 1. All deleted force-app files in this delta (repo-relative paths)
+            git diff --diff-filter=D --name-only "$COMPARE_REF" HEAD \
+              | grep 'force-app/' > deleted_files.txt || true
+
+            if [ ! -s deleted_files.txt ]; then
+              echo "✅ No deleted metadata detected — no destructive manifest needed."
+              exit 0
+            fi
+            echo "🗑️  Deleted files detected:"
+            cat deleted_files.txt
+
+            # 2. Download the ignore map from EA-Salesforce-Mapping
+            REPO_URL="${MAPPINGS_REPO_URL}"
+            FILENAME="${DESTRUCTIVE_MAP_FILENAME}"
+            if [ -z "$REPO_URL" ] || [ -z "$FILENAME" ]; then
+              echo "❌ MAPPINGS_REPO_URL or DESTRUCTIVE_MAP_FILENAME not set — aborting to avoid unsafe deletes."
+              exit 1
+            fi
+            IGNORE_URL="https://raw.githubusercontent.com/${REPO_URL}/main/JSON/${FILENAME}"
+            echo "📍 Fetching ignore map: $IGNORE_URL"
+
+            AUTH_HEADER=""
+            [ -n "$GITHUB_TEST_TOKEN" ] && AUTH_HEADER="Authorization: token $GITHUB_TEST_TOKEN"
+
+            if ! curl -f -s -H "$AUTH_HEADER" "$IGNORE_URL" -o destructive_ignore.json; then
+              echo "❌ Could not download destructive ignore map — aborting to avoid unsafe deletes."
+              exit 1
+            fi
+
+            # 3. Build a grep -E pattern of path fragments to EXCLUDE from deletion
+            IGNORE_PATTERN=$(jq -r '.ignoredTypes[].pathMatch' destructive_ignore.json | paste -sd '|' -)
+            echo "🚫 Ignore pattern: ${IGNORE_PATTERN:-<none>}"
+
+            if [ -n "$IGNORE_PATTERN" ]; then
+              grep -vE "$IGNORE_PATTERN" deleted_files.txt > deletable_files.txt || true
+            else
+              cp deleted_files.txt deletable_files.txt
+            fi
+
+            if [ ! -s deletable_files.txt ]; then
+              echo "✅ All deletions were in ignored metadata types — nothing to destroy."
+              rm -f deleted_files.txt deletable_files.txt destructive_ignore.json
+              exit 0
+            fi
+            echo "💣 Files eligible for destructive deploy:"
+            cat deletable_files.txt
+
+            # 4. Restore the deleted sources from the old ref into a temp project
+            #    so the CLI resolves them to (type, member) exactly as it does for package.xml
+            rm -rf .destructive_src
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              mkdir -p ".destructive_src/$(dirname "$f")"
+              git show "${COMPARE_REF}:${f}" > ".destructive_src/${f}" 2>/dev/null || true
+            done < deletable_files.txt
+
+            SRC=$(find .destructive_src -type d -name force-app | head -n 1)
+            if [ -z "$SRC" ]; then
+              echo "⚠️ Could not locate restored force-app tree — skipping destructive deploy."
+              rm -rf .destructive_src deleted_files.txt deletable_files.txt destructive_ignore.json
+              exit 0
+            fi
+
+            # 5. Generate the destructive manifest (--type post => destructiveChangesPost.xml)
+            sf project generate manifest \
+              --source-dir "$SRC" \
+              --type post \
+              --output-dir .
+
+            if [ -s destructiveChangesPost.xml ]; then
+              echo "✅ destructiveChangesPost.xml generated:"
+              cat destructiveChangesPost.xml
+              echo "export DESTRUCTIVE_ARGS='--post-destructive-changes destructiveChangesPost.xml'" >> $BASH_ENV
+            else
+              echo "⚠️ No destructiveChangesPost.xml produced — skipping."
+            fi
+
+            # 6. Cleanup temp source (keep the generated xml)
+            rm -rf .destructive_src deleted_files.txt deletable_files.txt destructive_ignore.json
+
   # ----------------------------------------------------------
   # JWT AUTH COMMAND : Authenticate to Salesforce using JWT for the specified target environment
   # ----------------------------------------------------------
@@ -240,9 +355,19 @@ commands:
               echo "export CHANGES_FOUND=false" >> $BASH_ENV
             fi
 
+      # --------------------------------------------------------
+      # Find Test Classes from Gist
+      # --------------------------------------------------------
+      - find-test-classes:
+          target_env: << parameters.target_env >>
 
       # --------------------------------------------------------
-      # Deploy (Delta or Full)
+      # Build Destructive Changes Manifest (sets DESTRUCTIVE_ARGS)
+      # --------------------------------------------------------
+      - build-destructive-manifest
+
+      # --------------------------------------------------------
+      # Deploy (Delta, Full, or Destructive-only)
       # --------------------------------------------------------
       - run:
           name: Deploy Metadata
@@ -257,26 +382,38 @@ commands:
             echo "OPERATION=$OPERATION"
             echo "APEX_CLASSES_CHANGED=$APEX_CLASSES_CHANGED"
             echo "TEST_CLASSES=$TEST_CLASSES"
+            echo "DESTRUCTIVE_ARGS=$DESTRUCTIVE_ARGS"
 
             if [ "$CHANGES_FOUND" = "true" ]; then
               echo "🔄 DELTA deploy"
               DEPLOY_TYPE="DELTA"
+            elif [ "$FIRST_RUN" = "true" ]; then
+              echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
+              DEPLOY_TYPE="FULL_FIRST_RUN"
+              sf project generate manifest --source-dir force-app > /dev/null
+            elif [ -n "$DESTRUCTIVE_ARGS" ]; then
+              echo "🗑️ DELETE-ONLY change — empty package + destructive deploy"
+              DEPLOY_TYPE="DESTRUCTIVE_ONLY"
+              # --post-destructive-changes requires a --manifest; pair it with an empty
+              # package.xml whose version matches the generated destructive manifest.
+              DESTRUCT_VER=$(grep -oP '<version>\K[^<]+' destructiveChangesPost.xml | head -n 1)
+              [ -z "$DESTRUCT_VER" ] && DESTRUCT_VER="62.0"
+              {
+                echo '<?xml version="1.0" encoding="UTF-8"?>'
+                echo '<Package xmlns="http://soap.sforce.com/2006/04/metadata">'
+                echo "    <version>${DESTRUCT_VER}</version>"
+                echo '</Package>'
+              } > package.xml
             else
-              if [ "$FIRST_RUN" = "true" ]; then
-                echo "🚀 FIRST RUN — FULL DEPLOY + TAG CREATION"
-                DEPLOY_TYPE="FULL_FIRST_RUN"
-              else
-                echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
-                DEPLOY_TYPE="FULL_NO_TAG"
-              fi
-
+              echo "⚠️ No delta — FULL DEPLOY (NO TAG CREATION)"
+              DEPLOY_TYPE="FULL_NO_TAG"
               sf project generate manifest --source-dir force-app > /dev/null
             fi
-            
+
             # Determine test level based on what changed
             source $BASH_ENV
 
-            if [ "$CHANGES_FOUND" = "true" ]; then
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$DEPLOY_TYPE" = "DESTRUCTIVE_ONLY" ]; then
               if [ "$APEX_CLASSES_CHANGED" = "true" ]; then
                 # Apex classes changed - we MUST have test classes
                 if [ -z "$TEST_CLASSES" ]; then
@@ -293,13 +430,14 @@ commands:
                     test_args="$test_args --tests $test_class"
                   done
                   
-                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args --async"
+                  echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level RunSpecifiedTests$test_args $DESTRUCTIVE_ARGS --async"
                   
                   DEPLOY_OUTPUT=$(sf project deploy start \
                     --manifest package.xml \
                     --target-org target \
                     --test-level RunSpecifiedTests \
                     $test_args \
+                    $DESTRUCTIVE_ARGS \
                     --async 2>&1)
                   
                   echo "$DEPLOY_OUTPUT"
@@ -316,14 +454,15 @@ commands:
                   echo "export DEPLOY_ID='$DEPLOY_ID'" >> $BASH_ENV
                 fi
               else
-                # No Apex classes changed - only metadata/config changes
+                # No Apex classes changed - only metadata/config changes (or destructive-only)
                 echo "ℹ️ No Apex classes changed - deploying with NoTestRun"
-                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun --async"
+                echo "Executing: sf project deploy start --manifest package.xml --target-org target --test-level NoTestRun $DESTRUCTIVE_ARGS --async"
                 
                 DEPLOY_OUTPUT=$(sf project deploy start \
                   --manifest package.xml \
                   --target-org target \
                   --test-level NoTestRun \
+                  $DESTRUCTIVE_ARGS \
                   --async 2>&1)
                 
                 echo "$DEPLOY_OUTPUT"
@@ -508,7 +647,10 @@ commands:
               exit 0
             fi
 
-            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ]; then
+            # Advance the tag when there were constructive changes, on first run, OR
+            # when a destructive-only deploy ran — otherwise the same deletion would be
+            # re-detected against the old tag on the next run.
+            if [ "$CHANGES_FOUND" = "true" ] || [ "$FIRST_RUN" = "true" ] || [ -n "$DESTRUCTIVE_ARGS" ]; then
               PROJECT_DIR=$(find . -name "sfdx-project.json" -exec dirname {} \; | head -n 1)
               cd "$PROJECT_DIR"
 
