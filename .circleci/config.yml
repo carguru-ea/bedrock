@@ -93,7 +93,7 @@ commands:
               echo "❌ MAPPINGS_REPO_URL or DESTRUCTIVE_MAP_FILENAME not set — aborting to avoid unsafe deletes."
               exit 1
             fi
-            IGNORE_URL="https://raw.githubusercontent.com/${REPO_URL}/main/JSON/${FILENAME}"
+            IGNORE_URL="https://raw.githubusercontent.com/carguru-ea/EA-Salesforce-Mapping/main/JSON/distructive_changes_metadata.json"
             echo "📍 Fetching ignore map: $IGNORE_URL"
 
             AUTH_HEADER=""
